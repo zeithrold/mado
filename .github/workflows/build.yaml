@@ -19,6 +19,8 @@ jobs:
           # Disable ARM runner as it's not supported in private repositories
           - platform: ubuntu-24.04-arm
             args: ''
+          - platform: windows-11-arm
+            args: ''
           - platform: windows-latest
             args: ''
     runs-on: ${{ matrix.platform }}
