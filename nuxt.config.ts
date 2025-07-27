@@ -12,7 +12,11 @@ export default defineNuxtConfig({
     },
   },
 
-  srcDir: './src',
+  typescript: {
+    typeCheck: true,
+  },
+
+  srcDir: 'src/',
 
   modules: [
     '@nuxt/eslint',
@@ -23,6 +27,7 @@ export default defineNuxtConfig({
     '@una-ui/nuxt',
     '@vueuse/nuxt',
     '@unocss/nuxt',
+    '@pinia/nuxt',
   ],
 
   nitro: {
@@ -31,5 +36,15 @@ export default defineNuxtConfig({
         dir: fileURLToPath(new URL('./src/public', import.meta.url)),
       },
     ],
+  },
+
+  unocss: {
+    nuxtLayers: true,
+  },
+
+  una: {
+    prefix: 'N',
+    themeable: true,
+    global: true,
   },
 })

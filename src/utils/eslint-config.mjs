@@ -53,6 +53,10 @@ const rules = {
     'error',
     { max: 3 },
   ],
+  'vue/component-name-in-template-casing': [
+    'error',
+    'PascalCase',
+  ],
 }
 
 export default rules

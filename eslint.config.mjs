@@ -1,18 +1,19 @@
 import antfu from '@antfu/eslint-config'
-// @ts-check
 import withNuxt from './.nuxt/eslint.config.mjs'
-import rules from './src/utils/eslint-config.mjs'
+import rules from './scripts/eslint-config.mjs'
 
 export default withNuxt(
-  // Your custom configs here
+  // // Your custom configs here
   antfu({
     typescript: {
       tsconfigPath: './tsconfig.json',
     },
     ignores: [
       'src-tauri/gen/**',
+      'src-tauri/target/**',
       'src/bindings.ts',
     ],
+    unocss: true,
     vue: true,
     formatters: true,
     rules,

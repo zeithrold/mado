@@ -1,6 +1,6 @@
 [package]
 name = "mado_app"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 description = "A Tauri App"
 license = ""
 repository = ""
@@ -33,3 +33,4 @@ tauri-specta = { version = "=2.0.0-rc.21", features = [
   "derive",
   "typescript"
 ] }
+tauri-plugin-os = "2"
