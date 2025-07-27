@@ -1,0 +1,38 @@
+{
+  "name": "nuxt-app",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "frontend:build": "nuxt build",
+    "frontend:dev": "nuxt dev",
+    "frontend:generate": "nuxt generate",
+    "frontend:preview": "nuxt preview",
+    "frontend:postinstall": "nuxt prepare",
+    "postinstall": "run-s frontend:postinstall"
+  },
+  "dependencies": {
+    "@nuxt/eslint": "1.7.1",
+    "@nuxt/fonts": "0.11.4",
+    "@nuxt/icon": "1.15.0",
+    "@nuxt/image": "1.10.0",
+    "@nuxt/scripts": "0.11.10",
+    "@tauri-apps/api": "^2.7.0",
+    "@una-ui/nuxt": "1.0.0-alpha.8",
+    "@unhead/vue": "^2.0.12",
+    "@vueuse/nuxt": "13.5.0",
+    "eslint": "^9.32.0",
+    "nuxt": "^4.0.1",
+    "vue": "^3.5.17",
+    "vue-router": "^4.5.1"
+  },
+  "devDependencies": {
+    "@antfu/eslint-config": "^5.0.0",
+    "@iconify-json/lucide": "^1.2.58",
+    "@iconify-json/tabler": "^1.2.20",
+    "@tauri-apps/cli": "^2.7.1",
+    "@unocss/nuxt": "^66.3.3",
+    "eslint-plugin-format": "^1.0.1",
+    "npm-run-all2": "^8.0.4",
+    "unocss": "^66.3.3"
+  }
+}
