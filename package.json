@@ -12,8 +12,8 @@
     "postinstall": "run-s frontend:postinstall",
     "backend:dev": "tauri dev",
     "backend:build": "tauri build",
-    "dev": "run-p backend:dev",
-    "build": "run-s backend:build"
+    "dev": "tauri dev",
+    "build": "tauri build"
   },
   "dependencies": {
     "@nuxt/eslint": "1.7.1",
