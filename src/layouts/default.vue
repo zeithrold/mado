@@ -2,7 +2,7 @@
 </script>
 
 <template>
-  <div class="flex flex-col h-[100vh] w-full">
+  <div class="h-[100vh] w-full flex flex-col">
     <LayoutAppBar />
     <slot />
   </div>

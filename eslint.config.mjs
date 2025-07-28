@@ -1,6 +1,6 @@
 import antfu from '@antfu/eslint-config'
 import withNuxt from './.nuxt/eslint.config.mjs'
-import rules from './scripts/eslint-config.mjs'
+import rules from './src/utils/eslint-config.mjs'
 
 export default withNuxt(
   // // Your custom configs here
