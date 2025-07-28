@@ -38,6 +38,9 @@ export default defineNuxtConfig({
     ],
   },
 
+  unocss: {
+    nuxtLayers: true,
+  },
   una: {
     prefix: 'N',
     themeable: true,

@@ -13,7 +13,6 @@ export default withNuxt(
       'src-tauri/target/**',
       'src/bindings.ts',
     ],
-    unocss: true,
     vue: true,
     formatters: true,
     rules,
