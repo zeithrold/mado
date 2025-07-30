@@ -62,7 +62,9 @@
     "tsconfig.json": "tsconfig.*.json",
     "package.json": "package-lock.json, yarn.lock, pnpm-lock.yaml, bun.lockb, bun.lock, pnpm-workspace.yaml",
     "Cargo.toml": "Cargo.lock",
-    "nuxt.config.ts": "nuxt.config.js, eslint.config.mjs, uno.config.mjs"
+    "nuxt.config.ts": "nuxt.config.js, eslint.config.mjs, uno.config.mjs, tsconfig.json",
+    ".gitignore": ".nvmrc, .editorconfig"
+
   },
   "vue.inlayHints.destructuredProps": true,
   "vue.inlayHints.inlineHandlerLeading": true,

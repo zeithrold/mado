@@ -1,12 +1,12 @@
 [package]
-name = "mado_app"
+name = "mado-app"
 version = "0.1.0-alpha.1"
 description = "A Tauri App"
 license = ""
 repository = ""
 edition = "2021"
 rust-version = "1.77.2"
-authors = [ "Yi Jin <z.work.zeithrold.dev>" ]
+authors = [ "Yi Jin <z.work@zeithrold.dev>" ]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
