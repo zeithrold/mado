@@ -60,4 +60,6 @@ The default path for implementation work is:
 5. Reserve `just check-full` for the daily scheduled gate; it adds mutation, nightly-only dependency checks, and fuzz smoke.
 6. Connect the slice to the demo UI only after the core boundary is stable.
 
+For integration tests that touch external network APIs or downloadable fixtures, verify provider URLs and parameters with lightweight `curl` metadata requests before writing the test logic. These tests may be CI-only or locally gated, so early curl checks make provider API mistakes visible without requiring a full local fixture run.
+
 This keeps the UI, architecture, and crate tracks synchronized without letting any one track invent a separate product.

@@ -149,7 +149,7 @@ fn zulu_url(version: u16) -> Result<Option<String>, Box<dyn std::error::Error>> 
     };
     let Some(download_url) = json
         .as_array()
-        .and_then(|items| items.first())
+        .and_then(|items| select_zulu_package(items))
         .and_then(|item| item.get("download_url"))
         .and_then(Value::as_str)
     else {
@@ -167,14 +167,22 @@ fn liberica_url(version: u16) -> Result<Option<String>, Box<dyn std::error::Erro
         return Ok(None);
     };
     let url = format!(
-        "https://api.bell-sw.com/v1/liberica/releases?version-feature={version}&os={os}&arch={arch}&package-type=jdk&bundle-type=jdk&bitness=64&release-type=ga&output=json"
+        "https://api.bell-sw.com/v1/liberica/releases?version-feature={version}&os={os}&arch={arch}&package-type=tar.gz&bundle-type=jdk&bitness=64&output=json"
     );
     let Some(json) = get_json(&url)? else {
         return Ok(None);
     };
-    let Some(download_url) = json
-        .as_array()
-        .and_then(|items| items.first())
+    let Some(items) = json.as_array() else {
+        return Ok(None);
+    };
+    let Some(download_url) = items
+        .iter()
+        .find(|item| {
+            item.get("latestInFeatureVersion")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        })
+        .or_else(|| items.first())
         .and_then(|item| item.get("downloadUrl").or_else(|| item.get("download_url")))
         .and_then(Value::as_str)
     else {
@@ -187,7 +195,7 @@ fn liberica_url(version: u16) -> Result<Option<String>, Box<dyn std::error::Erro
 fn get_json(url: &str) -> Result<Option<Value>, Box<dyn std::error::Error>> {
     let response = match ureq::get(url).call() {
         Ok(response) => response,
-        Err(ureq::Error::Status(404, _)) => return Ok(None),
+        Err(ureq::Error::Status(400 | 404, _)) => return Ok(None),
         Err(error) => return Err(error.into()),
     };
     let mut reader = response.into_reader();
@@ -196,13 +204,28 @@ fn get_json(url: &str) -> Result<Option<Value>, Box<dyn std::error::Error>> {
     Ok(Some(serde_json::from_str(&body)?))
 }
 
+fn select_zulu_package(items: &[Value]) -> Option<&Value> {
+    items
+        .iter()
+        .find(|item| {
+            item.get("name")
+                .and_then(Value::as_str)
+                .is_some_and(is_plain_zulu_jdk_archive)
+        })
+        .or_else(|| items.first())
+}
+
+fn is_plain_zulu_jdk_archive(name: &str) -> bool {
+    name.contains("-ca-jdk") && !name.contains("-crac-") && !name.contains("-fx-")
+}
+
 fn download_and_extract_tar_gz(
     url: &str,
     destination: &Path,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let response = match ureq::get(url).call() {
         Ok(response) => response,
-        Err(ureq::Error::Status(404, _)) => return Ok(false),
+        Err(ureq::Error::Status(400 | 404, _)) => return Ok(false),
         Err(error) => return Err(error.into()),
     };
     let reader = response.into_reader();
@@ -325,7 +348,7 @@ fn bellsoft_os() -> Option<&'static str> {
 fn bellsoft_arch() -> Option<&'static str> {
     match std::env::consts::ARCH {
         "x86_64" => Some("x86"),
-        "aarch64" => Some("aarch64"),
+        "aarch64" => Some("arm"),
         _ => None,
     }
 }

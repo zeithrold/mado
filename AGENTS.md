@@ -59,6 +59,8 @@ Use the existing `justfile` recipes:
 
 Docs-only changes do not require Rust tests. Code changes should at least run the smallest relevant local test command. Shared/core behavior should run `just check` locally, rely on `just check-ci` for integration coverage in CI, and reserve `just check-full` for the scheduled daily gate.
 
+When adding integration tests that depend on network APIs or downloadable fixtures, first validate the provider URLs and parameters with lightweight `curl` metadata requests. Do this before encoding the test fixture logic, because CI-only or gated network tests are often hard to run locally and otherwise make it unclear whether failures come from the code under test or from incorrect provider API assumptions.
+
 ## Implementation Style
 
 - Keep APIs deterministic and testable before connecting them to GPUI.
