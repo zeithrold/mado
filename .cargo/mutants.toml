@@ -1,0 +1,8 @@
+exclude_globs = [
+    "target/**",
+    "fuzz/**",
+]
+copy_target = true
+skip_calls = [
+    "println",
+]

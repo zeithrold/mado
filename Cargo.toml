@@ -1,0 +1,117 @@
+[workspace]
+members = [
+    "apps/mado",
+    "crates/icons",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+anyhow = "1"
+flate2 = "1"
+gpui = { version = "0.2.2", features = ["runtime_shaders"] }
+gpui-component = "0.5.1"
+mado-icons = { path = "crates/icons" }
+serde_json = "1"
+sha1 = "0.10"
+tar = "0.4"
+ureq = "2"
+
+[profile.release]
+opt-level = 3
+debug = false
+codegen-units = 1
+lto = "fat"
+panic = "abort"
+strip = "symbols"
+overflow-checks = false
+incremental = false
+
+[workspace.lints.clippy]
+# Groups
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+
+# useful restrictions rules
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+todo = "warn"
+unimplemented = "warn"
+dbg_macro = "deny"
+print_stdout = "warn"
+print_stderr = "warn"
+exit = "warn"
+
+# API / error / doc
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+missing_safety_doc = "warn"
+must_use_candidate = "allow"
+return_self_not_must_use = "warn"
+result_large_err = "warn"
+large_enum_variant = "warn"
+enum_glob_use = "warn"
+
+# readability and complexity
+cognitive_complexity = "warn"
+too_many_lines = "warn"
+too_many_arguments = "warn"
+type_complexity = "warn"
+fn_params_excessive_bools = "warn"
+struct_excessive_bools = "warn"
+similar_names = "allow"
+module_name_repetitions = "allow"
+
+# styles
+wildcard_imports = "warn"
+self_named_module_files = "warn"
+redundant_pub_crate = "warn"
+pub_without_shorthand = "warn"
+semicolon_if_nothing_returned = "warn"
+explicit_iter_loop = "allow"
+explicit_into_iter_loop = "allow"
+
+# performance and allocation
+inefficient_to_string = "warn"
+unnecessary_to_owned = "warn"
+clone_on_ref_ptr = "warn"
+rc_buffer = "warn"
+large_stack_arrays = "warn"
+large_types_passed_by_value = "warn"
+
+# security and correctness
+indexing_slicing = "warn"
+integer_division = "warn"
+float_cmp = "warn"
+float_cmp_const = "warn"
+lossy_float_literal = "warn"
+cast_possible_truncation = "warn"
+cast_possible_wrap = "warn"
+cast_precision_loss = "warn"
+cast_sign_loss = "warn"
+as_conversions = "allow"
+
+# async and concurrency
+await_holding_lock = "warn"
+await_holding_refcell_ref = "warn"
+future_not_send = "warn"
+mutex_atomic = "warn"
+mutex_integer = "warn"
+
+# code hygiene
+allow_attributes = "warn"
+allow_attributes_without_reason = "warn"
+undocumented_unsafe_blocks = "warn"
+multiple_unsafe_ops_per_block = "warn"
+
+# cargo.toml metadata: apply to allow, warn/deny to libraries
+cargo_common_metadata = "allow"
+multiple_crate_versions = "allow"
+wildcard_dependencies = "warn"

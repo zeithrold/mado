@@ -1,0 +1,11 @@
+[package]
+name = "mado"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mado-icons.workspace = true
+
+[lints]
+workspace = true
