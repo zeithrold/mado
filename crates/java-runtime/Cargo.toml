@@ -1,0 +1,18 @@
+[package]
+name = "mado-java-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+
+[dev-dependencies]
+flate2.workspace = true
+serde_json.workspace = true
+tar.workspace = true
+tempfile.workspace = true
+ureq.workspace = true
+
+[lints]
+workspace = true

@@ -3242,6 +3242,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "mado-java-runtime"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "serde_json",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.18",
+ "ureq",
+]
+
+[[package]]
 name = "malloc_buf"
 version = "0.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
