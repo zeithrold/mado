@@ -229,8 +229,13 @@ impl JavaMetadata {
             });
         }
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        Self::from_probe_output(
+            &String::from_utf8_lossy(&output.stdout),
+            &String::from_utf8_lossy(&output.stderr),
+        )
+    }
+
+    fn from_probe_output(stdout: &str, stderr: &str) -> Result<Self, JavaRuntimeError> {
         let combined = format!("{stdout}\n{stderr}");
         let values = parse_probe_properties(&combined);
 
@@ -537,5 +542,338 @@ OS_ARCH="x86_64"
                 field: "JAVA_VERSION"
             }
         ));
+    }
+
+    #[test]
+    fn parses_probe_output() -> Result<(), Box<dyn std::error::Error>> {
+        let metadata = JavaMetadata::from_probe_output(
+            "",
+            r"
+Property settings:
+    java.version = 21.0.5
+    java.vendor = Eclipse Adoptium
+    os.arch = aarch64
+",
+        )?;
+
+        assert_eq!(metadata.version, "21.0.5");
+        assert_eq!(metadata.vendor, "Eclipse Adoptium");
+        assert_eq!(metadata.architecture, "aarch64");
+        Ok(())
+    }
+
+    #[test]
+    fn probe_output_defaults_missing_vendor_and_architecture()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let metadata = JavaMetadata::from_probe_output("", "java.version = 17.0.11")?;
+
+        assert_eq!(metadata.version, "17.0.11");
+        assert_eq!(metadata.vendor, "Unknown");
+        assert_eq!(metadata.architecture, "unknown");
+        Ok(())
+    }
+
+    #[test]
+    fn reports_missing_version_in_probe_output() {
+        let error = JavaMetadata::from_probe_output("", "java.vendor = Oracle")
+            .err()
+            .unwrap_or(JavaRuntimeError::MissingMetadata {
+                field: "java.version",
+            });
+
+        assert!(matches!(
+            error,
+            JavaRuntimeError::MissingMetadata {
+                field: "java.version"
+            }
+        ));
+    }
+
+    #[test]
+    fn release_file_falls_back_to_java_vendor() -> Result<(), Box<dyn std::error::Error>> {
+        let metadata = JavaMetadata::from_release_file(
+            r#"
+JAVA_VERSION="17.0.11"
+JAVA_VENDOR="Oracle Corporation"
+OS_ARCH="x86_64"
+"#,
+        )?;
+
+        assert_eq!(metadata.vendor, "Oracle Corporation");
+        Ok(())
+    }
+
+    #[test]
+    fn release_file_defaults_vendor_and_architecture() -> Result<(), Box<dyn std::error::Error>> {
+        let metadata = JavaMetadata::from_release_file(
+            r#"
+JAVA_VERSION="21.0.5"
+"#,
+        )?;
+
+        assert_eq!(metadata.vendor, "Unknown");
+        assert_eq!(metadata.architecture, "unknown");
+        Ok(())
+    }
+
+    #[test]
+    fn release_file_falls_back_to_sun_arch_abi() -> Result<(), Box<dyn std::error::Error>> {
+        let metadata = JavaMetadata::from_release_file(
+            r#"
+JAVA_VERSION="11.0.24"
+IMPLEMENTOR="Oracle Corporation"
+SUN_ARCH_ABI="amd64"
+"#,
+        )?;
+
+        assert_eq!(metadata.architecture, "amd64");
+        Ok(())
+    }
+
+    #[test]
+    fn parse_key_value_lines_skips_comments_and_unquotes_values() {
+        let values = parse_key_value_lines(
+            r#"
+# comment
+JAVA_VERSION="21.0.5"
+
+IMPLEMENTOR=Eclipse Adoptium
+"#,
+        );
+
+        assert_eq!(values.get("JAVA_VERSION"), Some(&"21.0.5".to_string()));
+        assert_eq!(
+            values.get("IMPLEMENTOR"),
+            Some(&"Eclipse Adoptium".to_string())
+        );
+    }
+
+    #[test]
+    fn reports_invalid_version_edge_cases() {
+        for raw in ["", "   ", "1.", "\"\""] {
+            let error = JavaVersion::parse(raw)
+                .err()
+                .unwrap_or_else(|| JavaRuntimeError::InvalidVersion { raw: String::new() });
+
+            assert!(matches!(error, JavaRuntimeError::InvalidVersion { .. }));
+        }
+    }
+
+    #[test]
+    fn parses_version_with_quotes_and_whitespace() -> Result<(), Box<dyn std::error::Error>> {
+        let version = JavaVersion::parse("  \"21.0.5+11-LTS\"  ")?;
+        assert_eq!(version.major, 21);
+        assert_eq!(version.raw, "21.0.5+11-LTS");
+        Ok(())
+    }
+
+    #[test]
+    fn normalizes_remaining_architecture_variants() {
+        for (raw, kind) in [
+            ("i486", JavaArchitectureKind::X86),
+            ("i586", JavaArchitectureKind::X86),
+            ("i686", JavaArchitectureKind::X86),
+            ("arm32", JavaArchitectureKind::Arm),
+        ] {
+            assert_eq!(JavaArchitecture::from_raw(raw.to_string()).kind, kind);
+        }
+    }
+
+    #[test]
+    fn vendor_kind_display_round_trip() {
+        for (kind, label) in [
+            (JavaVendorKind::Temurin, "temurin"),
+            (JavaVendorKind::Zulu, "zulu"),
+            (JavaVendorKind::Liberica, "liberica"),
+            (JavaVendorKind::Oracle, "oracle"),
+            (JavaVendorKind::OpenJdk, "openjdk"),
+            (JavaVendorKind::Microsoft, "microsoft"),
+            (JavaVendorKind::Corretto, "corretto"),
+            (JavaVendorKind::Unknown, "unknown"),
+        ] {
+            assert_eq!(kind.to_string(), label);
+        }
+    }
+
+    #[test]
+    fn architecture_kind_display_round_trip() {
+        for (kind, label) in [
+            (JavaArchitectureKind::X86_64, "x86_64"),
+            (JavaArchitectureKind::Aarch64, "aarch64"),
+            (JavaArchitectureKind::X86, "x86"),
+            (JavaArchitectureKind::Arm, "arm"),
+            (JavaArchitectureKind::Unknown, "unknown"),
+        ] {
+            assert_eq!(kind.to_string(), label);
+        }
+    }
+
+    #[test]
+    fn reports_missing_executable_path() {
+        let error = detect_java_executable(Path::new("definitely-missing-java-executable"))
+            .err()
+            .unwrap_or_else(|| JavaRuntimeError::ExecutableMissing {
+                path: PathBuf::new(),
+            });
+
+        assert!(matches!(error, JavaRuntimeError::ExecutableMissing { .. }));
+    }
+
+    #[test]
+    fn metadata_is_incomplete_when_any_field_is_blank() {
+        assert!(
+            !JavaMetadata {
+                version: String::new(),
+                vendor: "Oracle".to_string(),
+                architecture: "x86_64".to_string(),
+            }
+            .is_complete()
+        );
+        assert!(
+            !JavaMetadata {
+                version: "21".to_string(),
+                vendor: "   ".to_string(),
+                architecture: "x86_64".to_string(),
+            }
+            .is_complete()
+        );
+        assert!(
+            !JavaMetadata {
+                version: "21".to_string(),
+                vendor: "Oracle".to_string(),
+                architecture: String::new(),
+            }
+            .is_complete()
+        );
+    }
+
+    #[cfg(unix)]
+    mod fake_java {
+        use super::*;
+        use std::os::unix::fs::PermissionsExt;
+
+        fn write_fake_java(
+            java_home: &Path,
+            script: &str,
+        ) -> Result<PathBuf, Box<dyn std::error::Error>> {
+            let bin_dir = java_home.join("bin");
+            fs::create_dir_all(&bin_dir)?;
+            let executable = bin_dir.join("java");
+            fs::write(&executable, script)?;
+            fs::set_permissions(&executable, fs::Permissions::from_mode(0o755))?;
+            Ok(executable)
+        }
+
+        const PROBE_SCRIPT: &str = r"#!/bin/sh
+cat <<'EOF' >&2
+Property settings:
+    java.version = 21.0.5
+    java.vendor = Eclipse Adoptium
+    os.arch = aarch64
+EOF
+exit 0
+";
+
+        #[test]
+        fn detects_home_via_probe_when_release_missing() -> Result<(), Box<dyn std::error::Error>> {
+            let temp = TempDir::new()?;
+            let java_home = temp.path();
+            write_fake_java(java_home, PROBE_SCRIPT)?;
+
+            let info = detect_java_home(java_home)?;
+            assert_eq!(info.version.major, 21);
+            assert_eq!(info.vendor.kind, JavaVendorKind::Temurin);
+            assert_eq!(info.architecture.kind, JavaArchitectureKind::Aarch64);
+            Ok(())
+        }
+
+        #[test]
+        fn detects_executable_via_probe_when_release_missing()
+        -> Result<(), Box<dyn std::error::Error>> {
+            let temp = TempDir::new()?;
+            let java_home = temp.path();
+            let executable = write_fake_java(java_home, PROBE_SCRIPT)?;
+
+            let info = detect_java_executable(&executable)?;
+            assert_eq!(info.java_home, java_home);
+            assert_eq!(info.version.major, 21);
+            Ok(())
+        }
+
+        #[test]
+        fn falls_back_to_probe_when_release_is_incomplete() -> Result<(), Box<dyn std::error::Error>>
+        {
+            let temp = TempDir::new()?;
+            let java_home = temp.path();
+            write_fake_java(java_home, PROBE_SCRIPT)?;
+            fs::write(
+                java_home.join("release"),
+                r#"
+JAVA_VERSION=""
+IMPLEMENTOR="Oracle Corporation"
+OS_ARCH="x86_64"
+"#,
+            )?;
+
+            let info = detect_java_home(java_home)?;
+            assert_eq!(info.version.major, 21);
+            assert_eq!(info.vendor.kind, JavaVendorKind::Temurin);
+            Ok(())
+        }
+
+        #[test]
+        fn falls_back_to_probe_when_release_is_malformed() -> Result<(), Box<dyn std::error::Error>>
+        {
+            let temp = TempDir::new()?;
+            let java_home = temp.path();
+            write_fake_java(java_home, PROBE_SCRIPT)?;
+            fs::write(java_home.join("release"), "not a valid release file")?;
+
+            let info = detect_java_home(java_home)?;
+            assert_eq!(info.version.major, 21);
+            Ok(())
+        }
+
+        #[test]
+        fn reports_probe_failure() -> Result<(), Box<dyn std::error::Error>> {
+            let temp = TempDir::new()?;
+            let java_home = temp.path();
+            write_fake_java(
+                java_home,
+                r#"#!/bin/sh
+echo "probe failed" >&2
+exit 1
+"#,
+            )?;
+
+            let error = detect_java_home(java_home).err().unwrap_or_else(|| {
+                JavaRuntimeError::ProbeFailed {
+                    executable: PathBuf::new(),
+                    status: String::new(),
+                    stderr: String::new(),
+                }
+            });
+
+            assert!(matches!(error, JavaRuntimeError::ProbeFailed { .. }));
+            Ok(())
+        }
+
+        #[test]
+        fn reports_read_release_error() -> Result<(), Box<dyn std::error::Error>> {
+            let temp = TempDir::new()?;
+            let java_home = temp.path();
+            write_fake_java(java_home, PROBE_SCRIPT)?;
+            fs::create_dir(java_home.join("release"))?;
+
+            let error = detect_java_home(java_home).err().unwrap_or_else(|| {
+                JavaRuntimeError::ReadRelease {
+                    path: PathBuf::new(),
+                    source: std::io::Error::from(std::io::ErrorKind::Other),
+                }
+            });
+
+            assert!(matches!(error, JavaRuntimeError::ReadRelease { .. }));
+            Ok(())
+        }
     }
 }
