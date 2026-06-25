@@ -55,9 +55,9 @@ The default path for implementation work is:
 
 1. Add or update the smallest model or behavior slice.
 2. Write unit tests that pin down deterministic behavior.
-3. Run `just fmt`, `just clippy`, and `just test`.
-4. Run broader gates such as `just coverage`, `just mutants-gate`, or `just check` when touching shared core behavior.
-5. Connect the slice to the demo UI only after the core boundary is stable.
+3. Run `just check` locally; it formats, lints, and enforces unit-test line coverage.
+4. Let `just check-ci` run in pull request and push CI; it adds integration tests that may use real-world Minecraft metadata and JDK fixtures.
+5. Reserve `just check-full` for the daily scheduled gate; it adds mutation, nightly-only dependency checks, and fuzz smoke.
+6. Connect the slice to the demo UI only after the core boundary is stable.
 
 This keeps the UI, architecture, and crate tracks synchronized without letting any one track invent a separate product.
-

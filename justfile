@@ -10,13 +10,15 @@ clippy:
     cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 test:
-    cargo test --workspace --all-targets
+    just test-unit
 
 test-unit:
     cargo test --workspace --lib --bins
 
 test-integration:
     cargo test --workspace --tests
+
+test-all: test-unit test-integration
 
 deny:
     cargo deny check
@@ -31,10 +33,10 @@ udeps:
     cargo +nightly udeps --workspace --all-targets
 
 coverage:
-    cargo llvm-cov --workspace --all-targets --fail-under-lines {{coverage_threshold}}
+    cargo llvm-cov --workspace --lib --bins --fail-under-lines {{coverage_threshold}}
 
 coverage-html:
-    cargo llvm-cov --workspace --all-targets --html
+    cargo llvm-cov --workspace --lib --bins --html
 
 fuzz-smoke:
     cargo +nightly fuzz run icon_name -- -runs=256
@@ -48,6 +50,8 @@ mutants:
 mutants-gate:
     ./scripts/mutants-gate.sh {{mutation_threshold}} target/mutants
 
-check: fmt clippy test deny audit machete coverage mutants-gate
+check: fmt clippy coverage
 
-check-full: check udeps fuzz-smoke
+check-ci: check test-integration deny audit machete
+
+check-full: check-ci mutants mutants-gate udeps fuzz-smoke

@@ -49,13 +49,15 @@ Use the existing `justfile` recipes:
 
 - `just fmt` for formatting.
 - `just clippy` for strict linting.
-- `just test` for workspace tests.
-- `just coverage` for line coverage.
+- `just test-unit` for local unit tests.
+- `just test-integration` for CI-only integration tests that may use real-world Minecraft metadata or JDK fixtures.
+- `just coverage` for local unit-test line coverage.
 - `just mutants-gate` for mutation score enforcement after `cargo-mutants` output exists.
-- `just check` for the normal full gate.
-- `just check-full` when nightly-only checks and fuzz smoke are appropriate.
+- `just check` for the local development gate, including unit-test coverage.
+- `just check-ci` for the per-push and pull request CI gate, including integration tests.
+- `just check-full` for the daily full gate, including mutation, nightly-only checks, and fuzz smoke.
 
-Docs-only changes do not require Rust tests. Code changes should at least run the smallest relevant test command, and shared/core behavior should run `just test` plus any focused fuzz, coverage, or mutation checks that apply.
+Docs-only changes do not require Rust tests. Code changes should at least run the smallest relevant local test command. Shared/core behavior should run `just check` locally, rely on `just check-ci` for integration coverage in CI, and reserve `just check-full` for the scheduled daily gate.
 
 ## Implementation Style
 
@@ -64,4 +66,3 @@ Docs-only changes do not require Rust tests. Code changes should at least run th
 - Use structured parsers and typed models for Minecraft metadata instead of ad hoc string handling.
 - Prefer precise errors that explain what failed to resolve, download, validate, or launch.
 - Add comments only when they clarify a non-obvious boundary or invariant.
-

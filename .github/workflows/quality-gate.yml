@@ -3,6 +3,9 @@ name: Quality Gate
 on:
   push:
   pull_request:
+  schedule:
+    - cron: "0 20 * * *"
+  workflow_dispatch:
 
 concurrency:
   group: quality-gate-${{ github.workflow }}-${{ github.ref }}
@@ -15,9 +18,10 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  check:
-    name: just check
+  check-ci:
+    name: just check-ci
     runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
 
     steps:
       - name: Checkout
@@ -52,7 +56,53 @@ jobs:
       - name: Install quality tools
         uses: taiki-e/install-action@v2
         with:
-          tool: just,cargo-deny,cargo-audit,cargo-machete,cargo-llvm-cov,cargo-mutants
+          tool: just,cargo-deny,cargo-audit,cargo-machete,cargo-llvm-cov
 
       - name: Run workspace quality gate
-        run: just check
+        run: just check-ci
+
+  check-full:
+    name: just check-full
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            libasound2-dev \
+            libfontconfig1-dev \
+            libssl-dev \
+            libwayland-dev \
+            libx11-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxcb1-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            pkg-config
+
+      - name: Install nightly Rust
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt, llvm-tools-preview
+
+      - name: Cache cargo data
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install full quality tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just,cargo-deny,cargo-audit,cargo-machete,cargo-llvm-cov,cargo-mutants,cargo-fuzz,cargo-udeps
+
+      - name: Run full workspace quality gate
+        run: just check-full
