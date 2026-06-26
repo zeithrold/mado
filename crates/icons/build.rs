@@ -21,10 +21,13 @@ const LUCIDE_STATIC_SHASUM: &str = "08812bde7238e206466ba07226e2316f2ab599fe";
 
 fn main() -> Result<()> {
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-env-changed=LUCIDE_STATIC_CACHE_DIR");
     println!("cargo:rerun-if-env-changed=LUCIDE_STATIC_REGISTRY");
 
     let out_dir = PathBuf::from(std::env::var("OUT_DIR")?);
-    let cache_dir = workspace_root()?.join("target").join("lucide-static-cache");
+    let cache_dir = std::env::var_os("LUCIDE_STATIC_CACHE_DIR")
+        .map(PathBuf::from)
+        .unwrap_or(workspace_root()?.join("target").join("lucide-static-cache"));
     let package_dir = ensure_lucide_static(&cache_dir)?;
     let icons = collect_icons(&package_dir)?;
 

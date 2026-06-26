@@ -166,8 +166,8 @@ fn detect_resolved_runtime(
             }
         })?;
         match JavaMetadata::from_release_file(&content) {
-            Ok(metadata) if metadata.is_complete() => metadata,
-            Ok(_) | Err(_) => JavaMetadata::from_probe(&java_executable)?,
+            Ok(metadata) => metadata,
+            Err(_) => JavaMetadata::from_probe(&java_executable)?,
         }
     } else {
         JavaMetadata::from_probe(&java_executable)?
@@ -245,12 +245,6 @@ impl JavaMetadata {
             architecture: optional_value(&values, "os.arch")
                 .unwrap_or_else(|| "unknown".to_string()),
         })
-    }
-
-    fn is_complete(&self) -> bool {
-        !self.version.trim().is_empty()
-            && !self.vendor.trim().is_empty()
-            && !self.architecture.trim().is_empty()
     }
 }
 
@@ -635,6 +629,7 @@ SUN_ARCH_ABI="amd64"
         let values = parse_key_value_lines(
             r#"
 # comment
+# JAVA_VERSION="99.0.0"
 JAVA_VERSION="21.0.5"
 
 IMPLEMENTOR=Eclipse Adoptium
@@ -646,6 +641,11 @@ IMPLEMENTOR=Eclipse Adoptium
             values.get("IMPLEMENTOR"),
             Some(&"Eclipse Adoptium".to_string())
         );
+        // A commented line that still contains '=' must be dropped, not parsed
+        // into a "# JAVA_VERSION" entry. This guards the empty/comment early
+        // return so the filter cannot be weakened from `||` to `&&`.
+        assert!(values.keys().all(|key| !key.starts_with('#')));
+        assert_eq!(values.len(), 2);
     }
 
     #[test]
@@ -717,34 +717,6 @@ IMPLEMENTOR=Eclipse Adoptium
             });
 
         assert!(matches!(error, JavaRuntimeError::ExecutableMissing { .. }));
-    }
-
-    #[test]
-    fn metadata_is_incomplete_when_any_field_is_blank() {
-        assert!(
-            !JavaMetadata {
-                version: String::new(),
-                vendor: "Oracle".to_string(),
-                architecture: "x86_64".to_string(),
-            }
-            .is_complete()
-        );
-        assert!(
-            !JavaMetadata {
-                version: "21".to_string(),
-                vendor: "   ".to_string(),
-                architecture: "x86_64".to_string(),
-            }
-            .is_complete()
-        );
-        assert!(
-            !JavaMetadata {
-                version: "21".to_string(),
-                vendor: "Oracle".to_string(),
-                architecture: String::new(),
-            }
-            .is_complete()
-        );
     }
 
     #[cfg(unix)]

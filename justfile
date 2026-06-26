@@ -45,13 +45,13 @@ fuzz:
     cargo +nightly fuzz run icon_name
 
 mutants:
-    cargo mutants --workspace --copy-target true --output target/mutants
+    cargo run -p xtask -- mutants target/mutants
 
 mutants-gate:
-    ./scripts/mutants-gate.sh {{mutation_threshold}} target/mutants
+    cargo run -p xtask -- mutants-gate {{mutation_threshold}} target/mutants
 
 check: fmt clippy coverage
 
 check-ci: check test-integration deny audit machete
 
-check-full: check-ci mutants mutants-gate udeps fuzz-smoke
+check-full: check-ci mutants-gate udeps fuzz-smoke
