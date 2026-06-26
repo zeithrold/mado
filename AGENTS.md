@@ -68,6 +68,12 @@ Docs-only changes do not require Rust tests. Code changes should at least run th
 
 When adding integration tests that depend on network APIs or downloadable fixtures, first validate the provider URLs and parameters with lightweight `curl` metadata requests. Do this before encoding the test fixture logic, because CI-only or gated network tests are often hard to run locally and otherwise make it unclear whether failures come from the code under test or from incorrect provider API assumptions.
 
+### Mocking
+
+Mock external boundaries, not core launch logic. Prefer small crate-local traits with production implementations and hand-written test fakes for process execution, network clients, clocks, provider APIs, platform detection, and other host-dependent behavior.
+
+Unit tests must not depend on network access, real Java installations, temporary executable scripts, wall-clock timing, or host-specific process behavior. Use fakes to manufacture precise success and failure cases, then keep real external behavior in integration tests that are separated from the local coverage gate unless they are stable and deterministic.
+
 ### UI Coverage
 
 Demo applications are allowed to be outside the coverage gate. Do not spend coverage budget forcing tests onto GPUI demo shells whose purpose is visual exploration.

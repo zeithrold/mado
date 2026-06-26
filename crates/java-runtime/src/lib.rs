@@ -151,6 +151,14 @@ fn detect_resolved_runtime(
     java_home: PathBuf,
     java_executable: PathBuf,
 ) -> Result<JavaRuntimeInfo, JavaRuntimeError> {
+    detect_resolved_runtime_with_probe(java_home, java_executable, &CommandJavaProbe)
+}
+
+fn detect_resolved_runtime_with_probe(
+    java_home: PathBuf,
+    java_executable: PathBuf,
+    probe: &impl JavaProbe,
+) -> Result<JavaRuntimeInfo, JavaRuntimeError> {
     if !java_executable.exists() {
         return Err(JavaRuntimeError::ExecutableMissing {
             path: java_executable,
@@ -167,10 +175,10 @@ fn detect_resolved_runtime(
         })?;
         match JavaMetadata::from_release_file(&content) {
             Ok(metadata) => metadata,
-            Err(_) => JavaMetadata::from_probe(&java_executable)?,
+            Err(_) => JavaMetadata::from_probe_with(&java_executable, probe)?,
         }
     } else {
-        JavaMetadata::from_probe(&java_executable)?
+        JavaMetadata::from_probe_with(&java_executable, probe)?
     };
 
     Ok(JavaRuntimeInfo {
@@ -185,6 +193,43 @@ fn detect_resolved_runtime(
 fn java_executable_for_home(java_home: &Path) -> PathBuf {
     let binary = if cfg!(windows) { "java.exe" } else { "java" };
     java_home.join("bin").join(binary)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct JavaProbeOutput {
+    stdout: String,
+    stderr: String,
+}
+
+trait JavaProbe {
+    fn run(&self, java_executable: &Path) -> Result<JavaProbeOutput, JavaRuntimeError>;
+}
+
+struct CommandJavaProbe;
+
+impl JavaProbe for CommandJavaProbe {
+    fn run(&self, java_executable: &Path) -> Result<JavaProbeOutput, JavaRuntimeError> {
+        let output = Command::new(java_executable)
+            .args(["-XshowSettings:properties", "-version"])
+            .output()
+            .map_err(|source| JavaRuntimeError::ProbeStart {
+                executable: java_executable.to_path_buf(),
+                source,
+            })?;
+
+        if !output.status.success() {
+            return Err(JavaRuntimeError::ProbeFailed {
+                executable: java_executable.to_path_buf(),
+                status: output.status.to_string(),
+                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            });
+        }
+
+        Ok(JavaProbeOutput {
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -212,27 +257,13 @@ impl JavaMetadata {
         })
     }
 
-    fn from_probe(java_executable: &Path) -> Result<Self, JavaRuntimeError> {
-        let output = Command::new(java_executable)
-            .args(["-XshowSettings:properties", "-version"])
-            .output()
-            .map_err(|source| JavaRuntimeError::ProbeStart {
-                executable: java_executable.to_path_buf(),
-                source,
-            })?;
+    fn from_probe_with(
+        java_executable: &Path,
+        probe: &impl JavaProbe,
+    ) -> Result<Self, JavaRuntimeError> {
+        let output = probe.run(java_executable)?;
 
-        if !output.status.success() {
-            return Err(JavaRuntimeError::ProbeFailed {
-                executable: java_executable.to_path_buf(),
-                status: output.status.to_string(),
-                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-            });
-        }
-
-        Self::from_probe_output(
-            &String::from_utf8_lossy(&output.stdout),
-            &String::from_utf8_lossy(&output.stderr),
-        )
+        Self::from_probe_output(&output.stdout, &output.stderr)
     }
 
     fn from_probe_output(stdout: &str, stderr: &str) -> Result<Self, JavaRuntimeError> {
@@ -719,47 +750,85 @@ IMPLEMENTOR=Eclipse Adoptium
         assert!(matches!(error, JavaRuntimeError::ExecutableMissing { .. }));
     }
 
-    #[cfg(unix)]
-    mod fake_java {
+    mod fake_probe {
         use super::*;
-        use std::io::Write;
-        use std::os::unix::fs::PermissionsExt;
+        use std::cell::Cell;
 
-        fn write_fake_java(
-            java_home: &Path,
-            script: &str,
-        ) -> Result<PathBuf, Box<dyn std::error::Error>> {
-            let bin_dir = java_home.join("bin");
-            fs::create_dir_all(&bin_dir)?;
-            let executable = bin_dir.join("java");
-            let mut file = fs::File::create(&executable)?;
-            file.write_all(script.as_bytes())?;
-            file.sync_all()?;
-            drop(file);
-            fs::set_permissions(&executable, fs::Permissions::from_mode(0o755))?;
+        fn create_java_executable(java_home: &Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
+            let executable = java_executable_for_home(java_home);
+            fs::create_dir_all(executable.parent().ok_or_else(|| {
+                JavaRuntimeError::ExecutableWithoutParent {
+                    path: executable.clone(),
+                }
+            })?)?;
+            fs::write(&executable, "")?;
             Ok(executable)
         }
 
-        const PROBE_SCRIPT: &str = r"#!/bin/sh
-cat <<'EOF' >&2
+        const PROBE_STDERR: &str = r"
 Property settings:
     java.version = 21.0.5
     java.vendor = Eclipse Adoptium
     os.arch = aarch64
-EOF
-exit 0
 ";
+
+        enum FakeProbeResult {
+            Success,
+            Failure,
+        }
+
+        struct FakeJavaProbe {
+            result: FakeProbeResult,
+            calls: Cell<usize>,
+        }
+
+        impl FakeJavaProbe {
+            fn success() -> Self {
+                Self {
+                    result: FakeProbeResult::Success,
+                    calls: Cell::new(0),
+                }
+            }
+
+            fn failure() -> Self {
+                Self {
+                    result: FakeProbeResult::Failure,
+                    calls: Cell::new(0),
+                }
+            }
+        }
+
+        impl JavaProbe for FakeJavaProbe {
+            fn run(&self, java_executable: &Path) -> Result<JavaProbeOutput, JavaRuntimeError> {
+                self.calls.set(self.calls.get() + 1);
+
+                match self.result {
+                    FakeProbeResult::Success => Ok(JavaProbeOutput {
+                        stdout: String::new(),
+                        stderr: PROBE_STDERR.to_string(),
+                    }),
+                    FakeProbeResult::Failure => Err(JavaRuntimeError::ProbeFailed {
+                        executable: java_executable.to_path_buf(),
+                        status: "exit status: 1".to_string(),
+                        stderr: "probe failed".to_string(),
+                    }),
+                }
+            }
+        }
 
         #[test]
         fn detects_home_via_probe_when_release_missing() -> Result<(), Box<dyn std::error::Error>> {
             let temp = TempDir::new()?;
             let java_home = temp.path();
-            write_fake_java(java_home, PROBE_SCRIPT)?;
+            let executable = create_java_executable(java_home)?;
+            let probe = FakeJavaProbe::success();
 
-            let info = detect_java_home(java_home)?;
+            let info =
+                detect_resolved_runtime_with_probe(java_home.to_path_buf(), executable, &probe)?;
             assert_eq!(info.version.major, 21);
             assert_eq!(info.vendor.kind, JavaVendorKind::Temurin);
             assert_eq!(info.architecture.kind, JavaArchitectureKind::Aarch64);
+            assert_eq!(probe.calls.get(), 1);
             Ok(())
         }
 
@@ -768,11 +837,14 @@ exit 0
         -> Result<(), Box<dyn std::error::Error>> {
             let temp = TempDir::new()?;
             let java_home = temp.path();
-            let executable = write_fake_java(java_home, PROBE_SCRIPT)?;
+            let executable = create_java_executable(java_home)?;
+            let probe = FakeJavaProbe::success();
 
-            let info = detect_java_executable(&executable)?;
+            let info =
+                detect_resolved_runtime_with_probe(java_home.to_path_buf(), executable, &probe)?;
             assert_eq!(info.java_home, java_home);
             assert_eq!(info.version.major, 21);
+            assert_eq!(probe.calls.get(), 1);
             Ok(())
         }
 
@@ -781,7 +853,8 @@ exit 0
         {
             let temp = TempDir::new()?;
             let java_home = temp.path();
-            write_fake_java(java_home, PROBE_SCRIPT)?;
+            let executable = create_java_executable(java_home)?;
+            let probe = FakeJavaProbe::success();
             fs::write(
                 java_home.join("release"),
                 r#"
@@ -791,9 +864,11 @@ OS_ARCH="x86_64"
 "#,
             )?;
 
-            let info = detect_java_home(java_home)?;
+            let info =
+                detect_resolved_runtime_with_probe(java_home.to_path_buf(), executable, &probe)?;
             assert_eq!(info.version.major, 21);
             assert_eq!(info.vendor.kind, JavaVendorKind::Temurin);
+            assert_eq!(probe.calls.get(), 1);
             Ok(())
         }
 
@@ -802,11 +877,14 @@ OS_ARCH="x86_64"
         {
             let temp = TempDir::new()?;
             let java_home = temp.path();
-            write_fake_java(java_home, PROBE_SCRIPT)?;
+            let executable = create_java_executable(java_home)?;
+            let probe = FakeJavaProbe::success();
             fs::write(java_home.join("release"), "not a valid release file")?;
 
-            let info = detect_java_home(java_home)?;
+            let info =
+                detect_resolved_runtime_with_probe(java_home.to_path_buf(), executable, &probe)?;
             assert_eq!(info.version.major, 21);
+            assert_eq!(probe.calls.get(), 1);
             Ok(())
         }
 
@@ -814,23 +892,20 @@ OS_ARCH="x86_64"
         fn reports_probe_failure() -> Result<(), Box<dyn std::error::Error>> {
             let temp = TempDir::new()?;
             let java_home = temp.path();
-            write_fake_java(
-                java_home,
-                r#"#!/bin/sh
-echo "probe failed" >&2
-exit 1
-"#,
-            )?;
+            let executable = create_java_executable(java_home)?;
+            let probe = FakeJavaProbe::failure();
 
-            let error = detect_java_home(java_home).err().unwrap_or_else(|| {
-                JavaRuntimeError::ProbeFailed {
-                    executable: PathBuf::new(),
-                    status: String::new(),
-                    stderr: String::new(),
-                }
-            });
+            let error =
+                detect_resolved_runtime_with_probe(java_home.to_path_buf(), executable, &probe)
+                    .err()
+                    .unwrap_or_else(|| JavaRuntimeError::ProbeFailed {
+                        executable: PathBuf::new(),
+                        status: String::new(),
+                        stderr: String::new(),
+                    });
 
             assert!(matches!(error, JavaRuntimeError::ProbeFailed { .. }));
+            assert_eq!(probe.calls.get(), 1);
             Ok(())
         }
 
@@ -838,17 +913,20 @@ exit 1
         fn reports_read_release_error() -> Result<(), Box<dyn std::error::Error>> {
             let temp = TempDir::new()?;
             let java_home = temp.path();
-            write_fake_java(java_home, PROBE_SCRIPT)?;
+            let executable = create_java_executable(java_home)?;
+            let probe = FakeJavaProbe::success();
             fs::create_dir(java_home.join("release"))?;
 
-            let error = detect_java_home(java_home).err().unwrap_or_else(|| {
-                JavaRuntimeError::ReadRelease {
-                    path: PathBuf::new(),
-                    source: std::io::Error::from(std::io::ErrorKind::Other),
-                }
-            });
+            let error =
+                detect_resolved_runtime_with_probe(java_home.to_path_buf(), executable, &probe)
+                    .err()
+                    .unwrap_or_else(|| JavaRuntimeError::ReadRelease {
+                        path: PathBuf::new(),
+                        source: std::io::Error::from(std::io::ErrorKind::Other),
+                    });
 
             assert!(matches!(error, JavaRuntimeError::ReadRelease { .. }));
+            assert_eq!(probe.calls.get(), 0);
             Ok(())
         }
     }
