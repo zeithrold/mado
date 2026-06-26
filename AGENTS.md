@@ -61,6 +61,12 @@ Docs-only changes do not require Rust tests. Code changes should at least run th
 
 When adding integration tests that depend on network APIs or downloadable fixtures, first validate the provider URLs and parameters with lightweight `curl` metadata requests. Do this before encoding the test fixture logic, because CI-only or gated network tests are often hard to run locally and otherwise make it unclear whether failures come from the code under test or from incorrect provider API assumptions.
 
+### UI Coverage
+
+Demo applications are allowed to be outside the coverage gate. Do not spend coverage budget forcing tests onto GPUI demo shells whose purpose is visual exploration.
+
+Formal UI applications must use the GPUI test framework for UI behavior. When writing, debugging, or reproducing those tests, use the repository `gpui-test` skill and prefer `#[gpui::test]` with `TestAppContext` or the deterministic GPUI scheduler instead of ad hoc UI test harnesses.
+
 ## Implementation Style
 
 - Keep APIs deterministic and testable before connecting them to GPUI.

@@ -204,4 +204,56 @@ mod tests {
     fn parses_default_mutation_threshold() {
         assert_eq!(parse_threshold(None), Ok(DEFAULT_MUTATION_THRESHOLD));
     }
+
+    #[test]
+    fn parses_custom_mutation_threshold() {
+        assert_eq!(parse_threshold(Some("75")), Ok(75));
+    }
+
+    #[test]
+    fn reports_invalid_mutation_threshold() {
+        let error = parse_threshold(Some("high")).unwrap_err();
+
+        assert!(error.contains("invalid mutation threshold"));
+        assert!(error.contains("high"));
+    }
+
+    #[test]
+    fn run_reports_usage_failure_when_command_is_missing() {
+        assert_eq!(run(Vec::new()), Ok(1));
+    }
+
+    #[test]
+    fn run_reports_success_for_help_commands() {
+        for command in ["-h", "--help", "help"] {
+            assert_eq!(run(vec![command.to_string()]), Ok(0));
+        }
+    }
+
+    #[test]
+    fn run_rejects_unknown_commands() {
+        assert_eq!(
+            run(vec!["wat".to_string()]),
+            Err("unknown xtask command: wat".to_string())
+        );
+    }
+
+    #[test]
+    fn summary_total_includes_all_viable_outcomes() {
+        let summary = MutationSummary {
+            caught: 3,
+            missed: 2,
+            timeout: 1,
+        };
+
+        assert_eq!(summary.total(), 6);
+    }
+
+    #[test]
+    fn exit_code_rejects_values_outside_u8_range() {
+        assert_eq!(exit_code(0), ExitCode::SUCCESS);
+        assert_eq!(exit_code(1), ExitCode::FAILURE);
+        assert_eq!(exit_code(256), ExitCode::FAILURE);
+        assert_eq!(exit_code(-1), ExitCode::FAILURE);
+    }
 }

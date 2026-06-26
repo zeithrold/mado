@@ -1,14 +1,21 @@
+#[cfg(not(coverage))]
 mod index;
+#[cfg(not(coverage))]
 mod title_bar;
 
+#[cfg(not(coverage))]
 use gpui::{
-    App, Application, Bounds, Context, Menu, MenuItem, Render, TitlebarOptions, Window,
-    WindowBounds, WindowOptions, actions, div, prelude::*, px, rgb, size,
+    App, Application, Bounds, TitlebarOptions, WindowBounds, WindowOptions, actions, px, size,
 };
+#[cfg(all(target_os = "macos", not(coverage)))]
+use gpui::{Context, Render, Window, div, prelude::*, rgb};
+#[cfg(not(coverage))]
 use gpui_component::Root;
 
+#[cfg(not(coverage))]
 use mado_icons::LucideAssets;
 
+#[cfg(not(coverage))]
 actions!(
     mado_demo,
     [
@@ -19,8 +26,10 @@ actions!(
     ]
 );
 
+#[cfg(all(target_os = "macos", not(coverage)))]
 struct AboutWindow;
 
+#[cfg(all(target_os = "macos", not(coverage)))]
 impl Render for AboutWindow {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         div()
@@ -37,6 +46,7 @@ impl Render for AboutWindow {
     }
 }
 
+#[cfg(not(coverage))]
 fn main() {
     Application::new()
         .with_assets(LucideAssets::new())
@@ -75,8 +85,13 @@ fn main() {
         });
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(coverage)]
+fn main() {}
+
+#[cfg(all(target_os = "macos", not(coverage)))]
 fn setup_menus(cx: &mut App) {
+    use gpui::{Menu, MenuItem};
+
     cx.on_action(|_: &Quit, cx: &mut App| cx.quit());
     cx.on_action(open_about);
     cx.set_menus(vec![Menu {
@@ -89,7 +104,7 @@ fn setup_menus(cx: &mut App) {
     }]);
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(coverage)))]
 fn open_about(_: &About, cx: &mut App) {
     let bounds = Bounds::centered(None, size(px(360.0), px(180.0)), cx);
     let _ = cx.open_window(

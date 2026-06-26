@@ -121,3 +121,6 @@ multiple_unsafe_ops_per_block = "warn"
 cargo_common_metadata = "allow"
 multiple_crate_versions = "allow"
 wildcard_dependencies = "warn"
+
+[workspace.lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(coverage)"] }
