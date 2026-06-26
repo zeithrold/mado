@@ -33,6 +33,8 @@ Expected output:
 
 The concept documents should be implementation-oriented. Each one should define ownership, required behavior, non-goals, and the first useful tests.
 
+Use `docs/TESTING_STRATEGY.md` as the shared testing policy for choosing unit, integration, and fuzz coverage.
+
 ## Crate Implementation Track
 
 Small functional slices should move into crates early and pass the full quality flow before being integrated deeply into the app.
@@ -67,5 +69,7 @@ The three tiers intentionally serve different scopes:
 - `just check-full` is the scheduled confidence loop. It runs the slowest and most toolchain-sensitive checks, including mutation, nightly-only dependency analysis, and fuzz, so those signals do not slow down everyday work.
 
 For integration tests that touch external network APIs or downloadable fixtures, verify provider URLs and parameters with lightweight `curl` metadata requests before writing the test logic. These tests may be CI-only or locally gated, so early curl checks make provider API mistakes visible without requiring a full local fixture run.
+
+For fuzz tests, follow `docs/TESTING_STRATEGY.md`: first pin expected behavior with focused unit tests, then fuzz compact deterministic boundaries where randomized input can expose invariant violations.
 
 This keeps the UI, architecture, and crate tracks synchronized without letting any one track invent a separate product.

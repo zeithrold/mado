@@ -40,6 +40,7 @@ Use the existing Rust workspace conventions:
 - `fuzz/` contains fuzz targets for invariants that deserve randomized coverage.
 - `scripts/` contains quality-gate helpers.
 - `docs/plan/` contains architecture planning documents.
+- `docs/TESTING_STRATEGY.md` contains the long-term policy for unit, integration, and fuzz coverage.
 - `docs/DEVELOPMENT_SETUP.md` is the human-first setup guide for macOS, Linux, and Windows. Agents should follow its Agent Notes section and stop for heavyweight GUI installers such as Visual Studio or Xcode prompts.
 
 Prefer small crates with explicit boundaries over broad application code. When adding a crate, wire it through the workspace manifest and give it focused unit tests before integrating it into the app.
