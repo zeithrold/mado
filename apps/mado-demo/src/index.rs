@@ -211,8 +211,8 @@ impl IndexPage {
                     let phase = if entering { delta } else { 1.0 - delta };
                     let slide_progress = ease_out_cubic(phase);
                     let opacity_progress = ease_out_quint(phase);
-                    let gap =
-                        TOOLTIP_START_GAP + (TOOLTIP_END_GAP - TOOLTIP_START_GAP) * slide_progress;
+                    let gap = (TOOLTIP_END_GAP - TOOLTIP_START_GAP)
+                        .mul_add(slide_progress, TOOLTIP_START_GAP);
                     el.mb(px(gap)).opacity(opacity_progress)
                 },
             )
