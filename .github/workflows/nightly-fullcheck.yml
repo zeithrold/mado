@@ -49,7 +49,7 @@ jobs:
           components: clippy, rustfmt, llvm-tools-preview
 
       - name: Install nightly Rust
-        run: rustup toolchain install nightly --profile minimal
+        run: rustup toolchain install nightly --profile minimal --target x86_64-unknown-linux-gnu
 
       - name: Cache cargo data
         uses: Swatinem/rust-cache@v2

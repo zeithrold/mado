@@ -39,7 +39,11 @@ coverage-html:
     cargo llvm-cov --workspace --lib --bins --html
 
 fuzz-smoke:
-    cargo +nightly fuzz run --target x86_64-unknown-linux-gnu icon_name -- -runs=256
+    if [ "$(uname -s)" = "Linux" ]; then \
+        cargo +nightly fuzz run --target x86_64-unknown-linux-gnu icon_name -- -runs=256; \
+    else \
+        cargo +nightly fuzz run icon_name -- -runs=256; \
+    fi
 
 fuzz:
     cargo +nightly fuzz run icon_name
