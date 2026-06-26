@@ -39,7 +39,7 @@ coverage-html:
     cargo llvm-cov --workspace --lib --bins --html
 
 fuzz-smoke:
-    cargo +nightly fuzz run icon_name -- -runs=256
+    cargo +nightly fuzz run --target x86_64-unknown-linux-gnu icon_name -- -runs=256
 
 fuzz:
     cargo +nightly fuzz run icon_name
