@@ -16,6 +16,7 @@ const AVATAR_CONTAINER_SIZE: f32 = AVATAR_SIZE * HOVER_BG_MAX_SCALE;
 const LAUNCH_BUTTON_WIDTH: f32 = 300.0;
 const LAUNCH_BUTTON_HEIGHT: f32 = 64.0;
 const DROPDOWN_TRIGGER_SIZE: f32 = 32.0;
+const MAIN_BOTTOM_PADDING: f32 = 40.0;
 const TOOLTIP_DELAY: Duration = Duration::from_millis(150);
 const TOOLTIP_ANIM_DURATION: Duration = Duration::from_millis(160);
 const TOOLTIP_START_GAP: f32 = 2.0;
@@ -71,16 +72,55 @@ impl Render for IndexPage {
         v_flex().size_full().child(title_bar::title_bar()).child(
             v_flex()
                 .flex_1()
+                .w_full()
                 .items_center()
-                .justify_center()
-                .gap_6()
-                .child(self.account_avatar(cx))
-                .child(Self::launch_button(cx)),
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .w_full()
+                        .items_center()
+                        .justify_center()
+                        .child(self.account_summary(cx)),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .w_full()
+                        .flex()
+                        .justify_center()
+                        .pb(px(MAIN_BOTTOM_PADDING))
+                        .child(Self::launch_button(cx)),
+                ),
         )
     }
 }
 
 impl IndexPage {
+    fn account_summary(&self, cx: &Context<Self>) -> impl IntoElement {
+        v_flex()
+            .items_center()
+            .gap_3()
+            .child(self.account_avatar(cx))
+            .child(
+                v_flex()
+                    .items_center()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_lg()
+                            .font_semibold()
+                            .text_color(rgb(0x001f_1f1f))
+                            .child("Zeithrold"),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(rgb(0x006f_6f6f))
+                            .child("Microsoft Account"),
+                    ),
+            )
+    }
+
     fn account_avatar(&self, cx: &Context<Self>) -> impl IntoElement {
         div()
             .id("account-avatar")
