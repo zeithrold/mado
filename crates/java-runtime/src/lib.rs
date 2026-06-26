@@ -722,6 +722,7 @@ IMPLEMENTOR=Eclipse Adoptium
     #[cfg(unix)]
     mod fake_java {
         use super::*;
+        use std::io::Write;
         use std::os::unix::fs::PermissionsExt;
 
         fn write_fake_java(
@@ -731,7 +732,10 @@ IMPLEMENTOR=Eclipse Adoptium
             let bin_dir = java_home.join("bin");
             fs::create_dir_all(&bin_dir)?;
             let executable = bin_dir.join("java");
-            fs::write(&executable, script)?;
+            let mut file = fs::File::create(&executable)?;
+            file.write_all(script.as_bytes())?;
+            file.sync_all()?;
+            drop(file);
             fs::set_permissions(&executable, fs::Permissions::from_mode(0o755))?;
             Ok(executable)
         }
