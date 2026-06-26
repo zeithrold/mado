@@ -1,6 +1,6 @@
 set dotenv-load := false
 
-coverage_threshold := "70"
+coverage_threshold := "75"
 mutation_threshold := "50"
 
 fmt:

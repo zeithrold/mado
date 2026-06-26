@@ -242,3 +242,141 @@ fn path_with_suffix(path: &Path, suffix: &str) -> PathBuf {
     value.push(suffix);
     PathBuf::from(value)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        Checksum, ChecksumAlgorithm, DownloadArtifactKind, DownloadJobId, DownloadJobPolicy,
+    };
+
+    #[test]
+    fn ensure_parent_dirs_creates_all_storage_directories() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let temp_dir = tempfile::tempdir()?;
+        let config = DownloadStorageConfig {
+            temp_suffix: ".tmp/partial".to_string(),
+            metadata_suffix: ".meta/partial.json".to_string(),
+            ..DownloadStorageConfig::default()
+        };
+        let paths =
+            DownloadStoragePaths::for_target(temp_dir.path().join("target/file.jar"), &config);
+
+        paths.ensure_parent_dirs()?;
+
+        assert!(paths.target_path.parent().is_some_and(Path::exists));
+        assert!(paths.partial_path.parent().is_some_and(Path::exists));
+        assert!(
+            paths
+                .partial_metadata_path
+                .parent()
+                .is_some_and(Path::exists)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn remove_partial_metadata_if_exists_is_idempotent() -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let paths = DownloadStoragePaths::for_target(
+            temp_dir.path().join("artifact.jar"),
+            &DownloadStorageConfig::default(),
+        );
+        fs::write(&paths.partial_metadata_path, b"{}")?;
+
+        paths.remove_partial_metadata_if_exists()?;
+        paths.remove_partial_metadata_if_exists()?;
+
+        assert!(!paths.partial_metadata_path.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn promote_partial_to_target_renames_partial_by_default()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let config = DownloadStorageConfig::default();
+        let paths = DownloadStoragePaths::for_target(temp_dir.path().join("artifact.jar"), &config);
+        paths.write_partial_bytes(b"artifact", &config)?;
+
+        paths.promote_partial_to_target(&config)?;
+
+        assert_eq!(fs::read(&paths.target_path)?, b"artifact");
+        assert!(!paths.partial_path.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn promote_partial_to_target_copies_then_removes_partial_when_not_atomic()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let config = DownloadStorageConfig {
+            atomic_rename: false,
+            ..DownloadStorageConfig::default()
+        };
+        let paths = DownloadStoragePaths::for_target(temp_dir.path().join("artifact.jar"), &config);
+        paths.write_partial_bytes(b"artifact", &config)?;
+
+        paths.promote_partial_to_target(&config)?;
+
+        assert_eq!(fs::read(&paths.target_path)?, b"artifact");
+        assert!(!paths.partial_path.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn read_partial_metadata_rejects_malformed_json() -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let paths = DownloadStoragePaths::for_target(
+            temp_dir.path().join("artifact.jar"),
+            &DownloadStorageConfig::default(),
+        );
+        fs::write(&paths.partial_metadata_path, b"not json")?;
+
+        let result = paths.read_partial_metadata();
+
+        assert!(matches!(
+            result,
+            Err(DownloadStorageError::ParsePartialMetadata { .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn partial_metadata_for_job_captures_resume_identity() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let temp_dir = tempfile::tempdir()?;
+        let job = DownloadJobSpec {
+            id: DownloadJobId::new("asset")?,
+            url: DownloadUrl::new("https://example.test/asset")?,
+            host: Some("example.test".to_string()),
+            target_path: temp_dir.path().join("asset"),
+            expected_size: Some(12),
+            checksum: Some(Checksum {
+                algorithm: ChecksumAlgorithm::Sha256,
+                value: "abc".to_string(),
+            }),
+            kind: DownloadArtifactKind::Asset,
+            policy: DownloadJobPolicy::default(),
+        };
+        let validator = ResumeValidator {
+            etag: Some("\"etag\"".to_string()),
+            last_modified: Some("Fri, 26 Jun 2026 00:00:00 GMT".to_string()),
+        };
+
+        let metadata = PartialDownloadMetadata::for_job(&job, 7, Some(validator.clone()));
+
+        assert_eq!(
+            metadata.schema_version,
+            PARTIAL_DOWNLOAD_METADATA_SCHEMA_VERSION
+        );
+        assert_eq!(metadata.job_id, job.id);
+        assert_eq!(metadata.url, job.url);
+        assert_eq!(metadata.target_path, job.target_path);
+        assert_eq!(metadata.expected_size, Some(12));
+        assert_eq!(metadata.checksum, job.checksum);
+        assert_eq!(metadata.downloaded, 7);
+        assert_eq!(metadata.validator, Some(validator));
+        Ok(())
+    }
+}

@@ -590,6 +590,273 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn resume_paused_job_returns_it_to_pending() -> Result<(), Box<dyn std::error::Error>> {
+        let mut manager = manager_with_jobs(1)?;
+        let id = job_id("job-0")?;
+        manager.apply_command(DownloadCommand::PauseJob(id.clone()))?;
+
+        let actions = manager.apply_command(DownloadCommand::ResumeJob(id.clone()))?;
+
+        assert!(actions.is_empty());
+        assert_eq!(manager.state(&id), Some(&DownloadJobState::Pending));
+        assert!(
+            manager
+                .drain_events()
+                .contains(&DownloadEvent::JobResumed { id })
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn cancel_running_job_waits_for_worker_stop_report() -> Result<(), Box<dyn std::error::Error>> {
+        let mut manager = manager_with_jobs(1)?;
+        let id = job_id("job-0")?;
+        let _actions = manager.schedule_ready_jobs();
+
+        let actions = manager.apply_command(DownloadCommand::CancelJob(id.clone()))?;
+
+        assert_eq!(
+            actions,
+            vec![DownloadManagerAction::StopWorker {
+                id: id.clone(),
+                reason: WorkerStopReason::Cancelled,
+            }]
+        );
+        assert!(matches!(
+            manager.state(&id),
+            Some(DownloadJobState::Cancelling { .. })
+        ));
+
+        manager.apply_worker_report(WorkerReport::Stopped {
+            id: id.clone(),
+            reason: WorkerStopReason::Cancelled,
+        })?;
+
+        assert_eq!(manager.state(&id), Some(&DownloadJobState::Cancelled));
+        assert_eq!(manager.terminal_state(), Some(PlanTerminalState::Failed));
+        Ok(())
+    }
+
+    #[test]
+    fn retryable_failure_becomes_terminal_after_max_attempts()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let plan = DownloadPlan::new(vec![job(job_id("job-0")?)?])?;
+        let config = DownloadManagerConfig {
+            retry: DownloadRetryConfig {
+                max_attempts: 2,
+                ..DownloadRetryConfig::default()
+            },
+            ..DownloadManagerConfig::default()
+        };
+        let mut manager = DownloadManagerState::new(plan, config)?;
+        let id = job_id("job-0")?;
+
+        let _actions = manager.schedule_ready_jobs();
+        manager.apply_worker_report(WorkerReport::Failed {
+            id: id.clone(),
+            error: "temporary".to_string(),
+            retryable: true,
+        })?;
+        assert_eq!(manager.state(&id), Some(&DownloadJobState::Pending));
+
+        let _actions = manager.schedule_ready_jobs();
+        manager.apply_worker_report(WorkerReport::Failed {
+            id: id.clone(),
+            error: "still failing".to_string(),
+            retryable: true,
+        })?;
+
+        assert!(matches!(
+            manager.state(&id),
+            Some(DownloadJobState::Failed { attempts: 2, .. })
+        ));
+        assert!(manager.drain_events().contains(&DownloadEvent::PlanFailed));
+        Ok(())
+    }
+
+    #[test]
+    fn completed_multi_job_plan_emits_terminal_event_once() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut manager = manager_with_jobs(2)?;
+        let first = job_id("job-0")?;
+        let second = job_id("job-1")?;
+        let _actions = manager.schedule_ready_jobs();
+        let _initial_events = manager.drain_events();
+
+        manager.apply_worker_report(WorkerReport::Completed { id: first })?;
+        manager.apply_worker_report(WorkerReport::Completed { id: second.clone() })?;
+        manager.apply_worker_report(WorkerReport::Completed { id: second })?;
+
+        let events = manager.drain_events();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, DownloadEvent::PlanCompleted))
+                .count(),
+            1
+        );
+        assert_eq!(manager.terminal_state(), Some(PlanTerminalState::Completed));
+        Ok(())
+    }
+
+    #[test]
+    fn config_validation_rejects_each_zero_or_empty_limit() {
+        let invalid_configs = [
+            (
+                DownloadManagerConfig {
+                    concurrency: DownloadConcurrencyConfig {
+                        global_limit: 0,
+                        ..DownloadConcurrencyConfig::default()
+                    },
+                    ..DownloadManagerConfig::default()
+                },
+                DownloadConfigError::ZeroGlobalConcurrency,
+            ),
+            (
+                DownloadManagerConfig {
+                    concurrency: DownloadConcurrencyConfig {
+                        per_host_limit: 0,
+                        ..DownloadConcurrencyConfig::default()
+                    },
+                    ..DownloadManagerConfig::default()
+                },
+                DownloadConfigError::ZeroPerHostConcurrency,
+            ),
+            (
+                DownloadManagerConfig {
+                    concurrency: DownloadConcurrencyConfig {
+                        queue_capacity: 0,
+                        ..DownloadConcurrencyConfig::default()
+                    },
+                    ..DownloadManagerConfig::default()
+                },
+                DownloadConfigError::ZeroQueueCapacity,
+            ),
+            (
+                DownloadManagerConfig {
+                    retry: DownloadRetryConfig {
+                        max_attempts: 0,
+                        ..DownloadRetryConfig::default()
+                    },
+                    ..DownloadManagerConfig::default()
+                },
+                DownloadConfigError::ZeroRetryAttempts,
+            ),
+            (
+                DownloadManagerConfig {
+                    events: DownloadEventConfig {
+                        event_buffer: 0,
+                        ..DownloadEventConfig::default()
+                    },
+                    ..DownloadManagerConfig::default()
+                },
+                DownloadConfigError::ZeroEventBuffer,
+            ),
+            (
+                DownloadManagerConfig {
+                    storage: DownloadStorageConfig {
+                        temp_suffix: String::new(),
+                        ..DownloadStorageConfig::default()
+                    },
+                    ..DownloadManagerConfig::default()
+                },
+                DownloadConfigError::EmptyTempSuffix,
+            ),
+            (
+                DownloadManagerConfig {
+                    storage: DownloadStorageConfig {
+                        metadata_suffix: String::new(),
+                        ..DownloadStorageConfig::default()
+                    },
+                    ..DownloadManagerConfig::default()
+                },
+                DownloadConfigError::EmptyMetadataSuffix,
+            ),
+        ];
+
+        for (config, expected_error) in invalid_configs {
+            assert_eq!(config.validate(), Err(expected_error));
+        }
+    }
+
+    #[test]
+    fn job_id_and_url_reject_empty_values() {
+        assert_eq!(
+            DownloadJobId::new(" \t"),
+            Err(DownloadPlanError::EmptyJobId)
+        );
+        assert_eq!(DownloadUrl::new("\n"), Err(DownloadPlanError::EmptyUrl));
+    }
+
+    #[test]
+    fn artifact_verifier_accepts_matching_sha256() -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let path = temp_dir.path().join("artifact.bin");
+        fs::write(&path, b"hello")?;
+        let mut spec = job(job_id("artifact")?)?;
+        spec.target_path = path.clone();
+        spec.expected_size = Some(5);
+        spec.checksum = Some(Checksum {
+            algorithm: ChecksumAlgorithm::Sha256,
+            value: "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824".to_string(),
+        });
+        let verifier = ArtifactVerifier::new(DownloadIntegrityConfig::default());
+
+        let verification = verifier.verify_job_target(&spec)?;
+
+        assert_eq!(verification.path, path);
+        assert_eq!(verification.size, 5);
+        Ok(())
+    }
+
+    #[test]
+    fn artifact_verifier_classifies_size_mismatch_for_redownload()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let path = temp_dir.path().join("artifact.bin");
+        fs::write(&path, b"hello")?;
+        let mut spec = job(job_id("short")?)?;
+        spec.target_path = path.clone();
+        spec.expected_size = Some(9);
+        spec.checksum = None;
+        let verifier = ArtifactVerifier::new(DownloadIntegrityConfig::default());
+
+        let decision = verifier.classify_existing_job_target(&spec);
+
+        assert!(matches!(
+            decision,
+            ExistingArtifactDecision::NeedsRedownload {
+                reason: ArtifactRedownloadReason::SizeMismatch {
+                    path: mismatch_path,
+                    expected: 9,
+                    actual: 5,
+                }
+            } if mismatch_path == path
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn artifact_verifier_can_verify_explicit_partial_path() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let temp_dir = tempfile::tempdir()?;
+        let target = temp_dir.path().join("artifact.bin");
+        let partial = temp_dir.path().join("artifact.bin.part");
+        fs::write(&partial, b"hello")?;
+        let mut spec = job(job_id("partial")?)?;
+        spec.target_path = target;
+        spec.expected_size = Some(5);
+        spec.checksum = None;
+        let verifier = ArtifactVerifier::new(DownloadIntegrityConfig::default());
+
+        let verification = verifier.verify_path(&spec, &partial)?;
+
+        assert_eq!(verification.path, partial);
+        assert_eq!(verification.size, 5);
+        Ok(())
+    }
+
     fn manager_with_jobs(count: usize) -> Result<DownloadManagerState, Box<dyn std::error::Error>> {
         let jobs = (0..count)
             .map(|index| job_id(format!("job-{index}")).and_then(job))

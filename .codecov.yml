@@ -1,0 +1,4 @@
+ignore:
+  - "apps/mado/**"
+  - "apps/mado-demo/**"
+  - "crates/java-runtime/src/probe.rs"

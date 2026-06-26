@@ -494,3 +494,500 @@ fn remove_file_if_exists(path: &Path) -> io::Result<()> {
         Err(source) => Err(source),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::path::{Path, PathBuf};
+    use std::sync::mpsc;
+    use std::thread;
+
+    use sha1::{Digest, Sha1};
+    use tokio::sync::oneshot;
+
+    use super::*;
+    use crate::{
+        Checksum, ChecksumAlgorithm, DownloadArtifactKind, DownloadJobPolicy,
+        DownloadManagerConfig, DownloadPlan, DownloadServiceLoop, DownloadUrl,
+    };
+
+    #[test]
+    fn resume_decision_restarts_when_resume_is_disabled() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let fixture = ResumeFixture::new()?;
+        let job = test_job(fixture.target_path(), b"complete")?;
+        fixture.write_partial(&job, b"part", Some(etag_validator()))?;
+        let worker = test_worker(
+            job,
+            NativeHttpBackendConfig {
+                resume: DownloadResumeConfig {
+                    mode: DownloadResumeMode::Disabled,
+                    min_size: 1,
+                    ..DownloadResumeConfig::default()
+                },
+                ..NativeHttpBackendConfig::default()
+            },
+        )?;
+
+        let decision = worker.resume_decision(&fixture.paths);
+
+        assert_eq!(decision, ResumeDecision::restart());
+        Ok(())
+    }
+
+    #[test]
+    fn resume_decision_restarts_when_metadata_does_not_match_job()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = ResumeFixture::new()?;
+        let job = test_job(fixture.target_path(), b"complete")?;
+        let mut mismatched_job = job.clone();
+        mismatched_job.url = DownloadUrl::new("http://127.0.0.1/other")?;
+        fixture.write_partial(&mismatched_job, b"part", Some(etag_validator()))?;
+        let worker = test_worker(job, resume_enabled_config())?;
+
+        let decision = worker.resume_decision(&fixture.paths);
+
+        assert_eq!(decision, ResumeDecision::restart());
+        Ok(())
+    }
+
+    #[test]
+    fn resume_decision_restarts_when_partial_length_does_not_match_metadata()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = ResumeFixture::new()?;
+        let job = test_job(fixture.target_path(), b"complete")?;
+        fixture
+            .paths
+            .write_partial_bytes(b"part", &fixture.storage)?;
+        fixture.paths.write_partial_metadata(
+            &PartialDownloadMetadata::for_job(&job, 9, Some(etag_validator())),
+            &fixture.storage,
+        )?;
+        let worker = test_worker(job, resume_enabled_config())?;
+
+        let decision = worker.resume_decision(&fixture.paths);
+
+        assert_eq!(decision, ResumeDecision::restart());
+        Ok(())
+    }
+
+    #[test]
+    fn resume_decision_restarts_when_partial_is_below_min_size()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = ResumeFixture::new()?;
+        let job = test_job(fixture.target_path(), b"complete")?;
+        fixture.write_partial(&job, b"part", Some(etag_validator()))?;
+        let worker = test_worker(
+            job,
+            NativeHttpBackendConfig {
+                resume: DownloadResumeConfig {
+                    min_size: 5,
+                    ..DownloadResumeConfig::default()
+                },
+                ..NativeHttpBackendConfig::default()
+            },
+        )?;
+
+        let decision = worker.resume_decision(&fixture.paths);
+
+        assert_eq!(decision, ResumeDecision::restart());
+        Ok(())
+    }
+
+    #[test]
+    fn resume_decision_restarts_when_validator_is_required_but_missing()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = ResumeFixture::new()?;
+        let job = test_job(fixture.target_path(), b"complete")?;
+        fixture.write_partial(&job, b"part", None)?;
+        let worker = test_worker(job, resume_enabled_config())?;
+
+        let decision = worker.resume_decision(&fixture.paths);
+
+        assert_eq!(decision, ResumeDecision::restart());
+        Ok(())
+    }
+
+    #[test]
+    fn resume_decision_uses_etag_for_if_range_when_partial_matches()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = ResumeFixture::new()?;
+        let job = test_job(fixture.target_path(), b"complete")?;
+        fixture.write_partial(&job, b"part", Some(etag_validator()))?;
+        let worker = test_worker(job, resume_enabled_config())?;
+
+        let decision = worker.resume_decision(&fixture.paths);
+
+        assert_eq!(
+            decision,
+            ResumeDecision {
+                should_resume: true,
+                downloaded: 4,
+                if_range: Some("\"resume\"".to_string()),
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn metadata_matches_job_rejects_changed_checksum() -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let mut job = test_job(temp_dir.path().join("artifact.jar"), b"complete")?;
+        let metadata = PartialDownloadMetadata::for_job(&job, 4, Some(etag_validator()));
+        job.checksum = Some(Checksum {
+            algorithm: ChecksumAlgorithm::Sha1,
+            value: "different".to_string(),
+        });
+
+        assert!(!metadata_matches_job(&metadata, &job));
+        Ok(())
+    }
+
+    #[test]
+    fn failure_retention_delete_removes_partial_and_metadata()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = ResumeFixture::new()?;
+        let job = test_job(fixture.target_path(), b"complete")?;
+        fixture.write_partial(&job, b"part", Some(etag_validator()))?;
+        let worker = test_worker(
+            job,
+            NativeHttpBackendConfig {
+                resume: DownloadResumeConfig {
+                    partial_on_failure: PartialRetentionPolicy::Delete,
+                    ..DownloadResumeConfig::default()
+                },
+                ..NativeHttpBackendConfig::default()
+            },
+        )?;
+
+        worker.apply_failure_retention();
+
+        assert!(!fixture.paths.partial_path.exists());
+        assert!(!fixture.paths.partial_metadata_path.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn pause_retention_keep_leaves_partial_and_metadata() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let fixture = ResumeFixture::new()?;
+        let job = test_job(fixture.target_path(), b"complete")?;
+        fixture.write_partial(&job, b"part", Some(etag_validator()))?;
+        let worker = test_worker(job, NativeHttpBackendConfig::default())?;
+
+        worker.apply_partial_retention(WorkerStopReason::Paused);
+
+        assert!(fixture.paths.partial_path.exists());
+        assert!(fixture.paths.partial_metadata_path.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn cancel_retention_delete_removes_partial_and_metadata()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = ResumeFixture::new()?;
+        let job = test_job(fixture.target_path(), b"complete")?;
+        fixture.write_partial(&job, b"part", Some(etag_validator()))?;
+        let worker = test_worker(
+            job,
+            NativeHttpBackendConfig {
+                resume: DownloadResumeConfig {
+                    partial_on_failure: PartialRetentionPolicy::Delete,
+                    ..DownloadResumeConfig::default()
+                },
+                ..NativeHttpBackendConfig::default()
+            },
+        )?;
+
+        worker.apply_partial_retention(WorkerStopReason::Cancelled);
+
+        assert!(!fixture.paths.partial_path.exists());
+        assert!(!fixture.paths.partial_metadata_path.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn finalize_download_fails_without_promoting_checksum_mismatch()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = ResumeFixture::new()?;
+        let job = test_job(fixture.target_path(), b"expected")?;
+        fixture
+            .paths
+            .write_partial_bytes(b"wrong", &fixture.storage)?;
+        let verifier = ArtifactVerifier::new(DownloadIntegrityConfig::default());
+        let worker = test_worker(job, NativeHttpBackendConfig::default())?;
+
+        let result = worker.finalize_download(&fixture.paths, &verifier);
+
+        assert!(matches!(
+            result,
+            Err(NativeHttpWorkerError {
+                retryable: false,
+                ..
+            })
+        ));
+        assert!(!fixture.paths.target_path.exists());
+        assert!(fixture.paths.partial_path.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn send_request_classifies_client_error_as_permanent() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let response = HttpFixture::serve_once("404 Not Found", b"missing")?;
+        let runtime = tokio_runtime()?;
+        let fixture = ResumeFixture::new()?;
+        let mut job = test_job(fixture.target_path(), b"expected")?;
+        job.url = DownloadUrl::new(response.url)?;
+        let worker = test_worker(job, NativeHttpBackendConfig::default())?;
+
+        let result =
+            runtime.block_on(worker.send_request(&fixture.paths, &ResumeDecision::restart()));
+
+        assert!(matches!(
+            result,
+            Err(NativeHttpWorkerError {
+                retryable: false,
+                ..
+            })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn send_request_classifies_server_error_as_retryable() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let response = HttpFixture::serve_once("503 Service Unavailable", b"try later")?;
+        let runtime = tokio_runtime()?;
+        let fixture = ResumeFixture::new()?;
+        let mut job = test_job(fixture.target_path(), b"expected")?;
+        job.url = DownloadUrl::new(response.url)?;
+        let worker = test_worker(job, NativeHttpBackendConfig::default())?;
+
+        let result =
+            runtime.block_on(worker.send_request(&fixture.paths, &ResumeDecision::restart()));
+
+        assert!(matches!(
+            result,
+            Err(NativeHttpWorkerError {
+                retryable: true,
+                ..
+            })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn send_request_restarts_when_resume_response_is_not_partial()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let response = HttpFixture::serve_once("200 OK", b"complete")?;
+        let runtime = tokio_runtime()?;
+        let fixture = ResumeFixture::new()?;
+        let mut job = test_job(fixture.target_path(), b"complete")?;
+        job.url = DownloadUrl::new(response.url.clone())?;
+        fixture.write_partial(&job, b"part", Some(etag_validator()))?;
+        let worker = test_worker(job, resume_enabled_config())?;
+        let resume = ResumeDecision {
+            should_resume: true,
+            downloaded: 4,
+            if_range: Some("\"resume\"".to_string()),
+        };
+
+        let result = runtime.block_on(worker.send_request(&fixture.paths, &resume));
+
+        assert!(result.is_ok());
+        assert!(!fixture.paths.partial_path.exists());
+        assert!(
+            response
+                .request()?
+                .to_ascii_lowercase()
+                .contains("range: bytes=4-")
+        );
+        Ok(())
+    }
+
+    fn test_worker(
+        job: DownloadJobSpec,
+        config: NativeHttpBackendConfig,
+    ) -> Result<NativeHttpWorker, Box<dyn std::error::Error>> {
+        let (_stop_sender, stop_receiver) = oneshot::channel();
+        Ok(NativeHttpWorker {
+            job,
+            client: reqwest::Client::new(),
+            report_handle: service_handle()?,
+            config,
+            stop_receiver,
+        })
+    }
+
+    fn service_handle() -> Result<DownloadServiceHandle, Box<dyn std::error::Error>> {
+        let (_service_loop, handle, _events) = DownloadServiceLoop::with_backend_factory(
+            DownloadPlan::new(Vec::new())?,
+            DownloadManagerConfig::default(),
+            |_| NoopBackend,
+        )?;
+        Ok(handle)
+    }
+
+    fn test_job(
+        target_path: impl AsRef<Path>,
+        body: &[u8],
+    ) -> Result<DownloadJobSpec, Box<dyn std::error::Error>> {
+        Ok(DownloadJobSpec {
+            id: DownloadJobId::new("artifact")?,
+            url: DownloadUrl::new("http://127.0.0.1/artifact")?,
+            host: Some("127.0.0.1".to_string()),
+            target_path: target_path.as_ref().to_path_buf(),
+            expected_size: Some(body.len() as u64),
+            checksum: Some(Checksum {
+                algorithm: ChecksumAlgorithm::Sha1,
+                value: sha1_hex(body),
+            }),
+            kind: DownloadArtifactKind::Library,
+            policy: DownloadJobPolicy::default(),
+        })
+    }
+
+    fn resume_enabled_config() -> NativeHttpBackendConfig {
+        NativeHttpBackendConfig {
+            resume: DownloadResumeConfig {
+                min_size: 1,
+                validator_policy: ResumeValidatorPolicy::RequireMatch,
+                ..DownloadResumeConfig::default()
+            },
+            ..NativeHttpBackendConfig::default()
+        }
+    }
+
+    fn etag_validator() -> ResumeValidator {
+        ResumeValidator {
+            etag: Some("\"resume\"".to_string()),
+            last_modified: None,
+        }
+    }
+
+    fn sha1_hex(bytes: &[u8]) -> String {
+        let mut hasher = Sha1::new();
+        hasher.update(bytes);
+        hex::encode(hasher.finalize())
+    }
+
+    fn tokio_runtime() -> Result<tokio::runtime::Runtime, Box<dyn std::error::Error>> {
+        Ok(tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?)
+    }
+
+    #[derive(Debug)]
+    struct ResumeFixture {
+        _temp_dir: tempfile::TempDir,
+        storage: DownloadStorageConfig,
+        paths: DownloadStoragePaths,
+    }
+
+    impl ResumeFixture {
+        fn new() -> Result<Self, Box<dyn std::error::Error>> {
+            let temp_dir = tempfile::tempdir()?;
+            let storage = DownloadStorageConfig::default();
+            let paths =
+                DownloadStoragePaths::for_target(temp_dir.path().join("artifact.jar"), &storage);
+            Ok(Self {
+                _temp_dir: temp_dir,
+                storage,
+                paths,
+            })
+        }
+
+        fn target_path(&self) -> PathBuf {
+            self.paths.target_path.clone()
+        }
+
+        fn write_partial(
+            &self,
+            job: &DownloadJobSpec,
+            bytes: &[u8],
+            validator: Option<ResumeValidator>,
+        ) -> Result<(), Box<dyn std::error::Error>> {
+            self.paths.write_partial_bytes(bytes, &self.storage)?;
+            self.paths.write_partial_metadata(
+                &PartialDownloadMetadata::for_job(job, bytes.len() as u64, validator),
+                &self.storage,
+            )?;
+            Ok(())
+        }
+    }
+
+    #[derive(Debug)]
+    struct HttpFixture {
+        url: String,
+        request_receiver: mpsc::Receiver<String>,
+    }
+
+    impl HttpFixture {
+        fn serve_once(
+            status: &'static str,
+            body: &'static [u8],
+        ) -> Result<Self, Box<dyn std::error::Error>> {
+            let listener = TcpListener::bind("127.0.0.1:0")?;
+            let address = listener.local_addr()?;
+            let (request_sender, request_receiver) = mpsc::channel();
+            thread::spawn(move || {
+                let Ok((mut stream, _peer)) = listener.accept() else {
+                    return;
+                };
+                let request = read_http_request(&mut stream);
+                let _ = request_sender.send(request);
+                let headers = format!(
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(headers.as_bytes());
+                let _ = stream.write_all(body);
+            });
+            Ok(Self {
+                url: format!("http://{address}/artifact"),
+                request_receiver,
+            })
+        }
+
+        fn request(&self) -> Result<String, Box<dyn std::error::Error>> {
+            Ok(self.request_receiver.recv()?)
+        }
+    }
+
+    fn read_http_request(stream: &mut impl Read) -> String {
+        let mut bytes = Vec::new();
+        let mut buffer = [0; 512];
+        while let Ok(read) = stream.read(&mut buffer) {
+            if read == 0 {
+                break;
+            }
+            let Some(chunk) = buffer.get(..read) else {
+                break;
+            };
+            bytes.extend_from_slice(chunk);
+            if bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+                break;
+            }
+        }
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    #[derive(Debug)]
+    struct NoopBackend;
+
+    impl DownloadBackend for NoopBackend {
+        fn start_job(&mut self, _job: DownloadJobSpec) -> Result<(), DownloadBackendError> {
+            Ok(())
+        }
+
+        fn stop_worker(
+            &mut self,
+            _id: &DownloadJobId,
+            _reason: WorkerStopReason,
+        ) -> Result<(), DownloadBackendError> {
+            Ok(())
+        }
+    }
+}
