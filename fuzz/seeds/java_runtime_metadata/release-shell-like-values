@@ -1,0 +1,3 @@
+JAVA_VERSION="21.0.5; rm -rf /"
+IMPLEMENTOR="$(open /Applications/Calculator.app)"
+OS_ARCH="../../../../tmp"

@@ -1,0 +1,3 @@
+JAVA_VERSION="21.0.5"
+IMPLEMENTOR="#[proc_macro] pub fn payload(_: TokenStream) -> TokenStream { std::process::Command::new(\"open\").arg(\"/Applications/Calculator.app\").spawn().unwrap(); TokenStream::new() }"
+OS_ARCH="aarch64"

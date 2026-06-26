@@ -5,6 +5,9 @@ use std::process::Command;
 
 use thiserror::Error;
 
+const MAX_RELEASE_FILE_BYTES: u64 = 64 * 1024;
+const MAX_METADATA_VALUE_BYTES: usize = 512;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JavaRuntimeInfo {
     pub java_home: PathBuf,
@@ -94,8 +97,21 @@ pub enum JavaRuntimeError {
         #[source]
         source: std::io::Error,
     },
+    #[error("Java release file is too large at {path}: {size} bytes exceeds {max_size} bytes")]
+    ReleaseFileTooLarge {
+        path: PathBuf,
+        size: u64,
+        max_size: u64,
+    },
     #[error("Java metadata is missing required field: {field}")]
     MissingMetadata { field: &'static str },
+    #[error("Java metadata field is too large: {field} exceeds {max_bytes} bytes")]
+    MetadataValueTooLarge {
+        field: &'static str,
+        max_bytes: usize,
+    },
+    #[error("Java metadata field contains a control character: {field}")]
+    MetadataValueContainsControl { field: &'static str },
     #[error("Java version is invalid: {raw}")]
     InvalidVersion { raw: String },
     #[error("failed to run Java probe command {executable}: {source}")]
@@ -147,6 +163,58 @@ pub fn detect_java_executable(path: impl AsRef<Path>) -> Result<JavaRuntimeInfo,
     detect_resolved_runtime(java_home.to_path_buf(), java_executable.to_path_buf())
 }
 
+#[cfg(fuzzing)]
+pub mod fuzzing {
+    use super::{
+        JavaArchitecture, JavaArchitectureKind, JavaMetadata, JavaRuntimeError, JavaVendor,
+        JavaVendorKind, JavaVersion,
+    };
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct ParsedJavaMetadata {
+        pub version: String,
+        pub vendor: String,
+        pub architecture: String,
+    }
+
+    pub fn parse_release_metadata(content: &str) -> Result<ParsedJavaMetadata, JavaRuntimeError> {
+        JavaMetadata::from_release_file(content).map(ParsedJavaMetadata::from)
+    }
+
+    pub fn parse_probe_metadata(
+        stdout: &str,
+        stderr: &str,
+    ) -> Result<ParsedJavaMetadata, JavaRuntimeError> {
+        JavaMetadata::from_probe_output(stdout, stderr).map(ParsedJavaMetadata::from)
+    }
+
+    pub fn parse_java_version(raw: &str) -> Result<JavaVersion, JavaRuntimeError> {
+        JavaVersion::parse(raw)
+    }
+
+    pub fn classify_vendor(raw: &str) -> JavaVendorKind {
+        JavaVendor::from_raw(raw.to_string()).kind
+    }
+
+    pub fn classify_architecture(raw: &str) -> JavaArchitectureKind {
+        JavaArchitecture::from_raw(raw.to_string()).kind
+    }
+
+    pub const fn max_metadata_value_bytes() -> usize {
+        super::MAX_METADATA_VALUE_BYTES
+    }
+
+    impl From<JavaMetadata> for ParsedJavaMetadata {
+        fn from(metadata: JavaMetadata) -> Self {
+            Self {
+                version: metadata.version,
+                vendor: metadata.vendor,
+                architecture: metadata.architecture,
+            }
+        }
+    }
+}
+
 fn detect_resolved_runtime(
     java_home: PathBuf,
     java_executable: PathBuf,
@@ -167,6 +235,20 @@ fn detect_resolved_runtime_with_probe(
 
     let release_path = java_home.join("release");
     let metadata = if release_path.exists() {
+        let size = std::fs::metadata(&release_path)
+            .map_err(|source| JavaRuntimeError::ReadRelease {
+                path: release_path.clone(),
+                source,
+            })?
+            .len();
+        if size > MAX_RELEASE_FILE_BYTES {
+            return Err(JavaRuntimeError::ReleaseFileTooLarge {
+                path: release_path,
+                size,
+                max_size: MAX_RELEASE_FILE_BYTES,
+            });
+        }
+
         let content = std::fs::read_to_string(&release_path).map_err(|source| {
             JavaRuntimeError::ReadRelease {
                 path: release_path,
@@ -243,12 +325,18 @@ impl JavaMetadata {
     fn from_release_file(content: &str) -> Result<Self, JavaRuntimeError> {
         let values = parse_key_value_lines(content);
         let version = required_value(&values, "JAVA_VERSION")?;
-        let vendor = optional_value(&values, "IMPLEMENTOR")
-            .or_else(|| optional_value(&values, "JAVA_VENDOR"))
-            .unwrap_or_else(|| "Unknown".to_string());
-        let architecture = optional_value(&values, "OS_ARCH")
-            .or_else(|| optional_value(&values, "SUN_ARCH_ABI"))
-            .unwrap_or_else(|| "unknown".to_string());
+        let vendor = match optional_value(&values, "IMPLEMENTOR")? {
+            Some(vendor) => vendor,
+            None => {
+                optional_value(&values, "JAVA_VENDOR")?.unwrap_or_else(|| "Unknown".to_string())
+            }
+        };
+        let architecture = match optional_value(&values, "OS_ARCH")? {
+            Some(architecture) => architecture,
+            None => {
+                optional_value(&values, "SUN_ARCH_ABI")?.unwrap_or_else(|| "unknown".to_string())
+            }
+        };
 
         Ok(Self {
             version,
@@ -272,8 +360,9 @@ impl JavaMetadata {
 
         Ok(Self {
             version: required_value(&values, "java.version")?,
-            vendor: optional_value(&values, "java.vendor").unwrap_or_else(|| "Unknown".to_string()),
-            architecture: optional_value(&values, "os.arch")
+            vendor: optional_value(&values, "java.vendor")?
+                .unwrap_or_else(|| "Unknown".to_string()),
+            architecture: optional_value(&values, "os.arch")?
                 .unwrap_or_else(|| "unknown".to_string()),
         })
     }
@@ -282,6 +371,8 @@ impl JavaMetadata {
 impl JavaVersion {
     fn parse(raw: &str) -> Result<Self, JavaRuntimeError> {
         let raw = raw.trim().trim_matches('"').to_string();
+        let raw = validate_metadata_value("version", raw)?;
+
         let major_text = raw.strip_prefix("1.").map_or_else(
             || raw.split(['.', '_', '-']).next(),
             |rest| rest.split(['.', '_', '-']).next(),
@@ -369,18 +460,42 @@ fn required_value(
     values: &BTreeMap<String, String>,
     key: &'static str,
 ) -> Result<String, JavaRuntimeError> {
-    values
+    let value = values
         .get(key)
         .filter(|value| !value.trim().is_empty())
         .cloned()
-        .ok_or(JavaRuntimeError::MissingMetadata { field: key })
+        .ok_or(JavaRuntimeError::MissingMetadata { field: key })?;
+    validate_metadata_value(key, value)
 }
 
-fn optional_value(values: &BTreeMap<String, String>, key: &str) -> Option<String> {
-    values
+fn optional_value(
+    values: &BTreeMap<String, String>,
+    key: &'static str,
+) -> Result<Option<String>, JavaRuntimeError> {
+    let Some(value) = values
         .get(key)
         .filter(|value| !value.trim().is_empty())
         .cloned()
+    else {
+        return Ok(None);
+    };
+
+    validate_metadata_value(key, value).map(Some)
+}
+
+fn validate_metadata_value(key: &'static str, value: String) -> Result<String, JavaRuntimeError> {
+    if value.len() > MAX_METADATA_VALUE_BYTES {
+        return Err(JavaRuntimeError::MetadataValueTooLarge {
+            field: key,
+            max_bytes: MAX_METADATA_VALUE_BYTES,
+        });
+    }
+
+    if value.chars().any(char::is_control) {
+        return Err(JavaRuntimeError::MetadataValueContainsControl { field: key });
+    }
+
+    Ok(value)
 }
 
 fn unquote(value: &str) -> String {
@@ -688,6 +803,142 @@ IMPLEMENTOR=Eclipse Adoptium
 
             assert!(matches!(error, JavaRuntimeError::InvalidVersion { .. }));
         }
+    }
+
+    #[test]
+    fn reports_release_file_too_large() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = TempDir::new()?;
+        let java_home = temp.path();
+        let oversized_len = usize::try_from(MAX_RELEASE_FILE_BYTES + 1)?;
+        fs::create_dir(java_home.join("bin"))?;
+        fs::write(java_home.join("bin").join("java"), "")?;
+        fs::write(java_home.join("release"), "A".repeat(oversized_len))?;
+
+        let error = detect_java_home(java_home).err().unwrap_or_else(|| {
+            JavaRuntimeError::ReleaseFileTooLarge {
+                path: PathBuf::new(),
+                size: 0,
+                max_size: MAX_RELEASE_FILE_BYTES,
+            }
+        });
+
+        assert!(matches!(
+            error,
+            JavaRuntimeError::ReleaseFileTooLarge { .. }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn reports_required_metadata_value_too_large() {
+        let content = format!(
+            "JAVA_VERSION=\"{}\"",
+            "1".repeat(MAX_METADATA_VALUE_BYTES + 1)
+        );
+        let error = JavaMetadata::from_release_file(&content).err().unwrap_or(
+            JavaRuntimeError::MetadataValueTooLarge {
+                field: "JAVA_VERSION",
+                max_bytes: MAX_METADATA_VALUE_BYTES,
+            },
+        );
+
+        assert!(matches!(
+            error,
+            JavaRuntimeError::MetadataValueTooLarge {
+                field: "JAVA_VERSION",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn reports_optional_metadata_value_too_large() {
+        let content = format!(
+            "JAVA_VERSION=\"21.0.5\"\nIMPLEMENTOR=\"{}\"",
+            "A".repeat(MAX_METADATA_VALUE_BYTES + 1)
+        );
+        let error = JavaMetadata::from_release_file(&content).err().unwrap_or(
+            JavaRuntimeError::MetadataValueTooLarge {
+                field: "IMPLEMENTOR",
+                max_bytes: MAX_METADATA_VALUE_BYTES,
+            },
+        );
+
+        assert!(matches!(
+            error,
+            JavaRuntimeError::MetadataValueTooLarge {
+                field: "IMPLEMENTOR",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn reports_probe_metadata_value_too_large() {
+        let stderr = format!(
+            "java.version = 21.0.5\njava.vendor = {}",
+            "A".repeat(MAX_METADATA_VALUE_BYTES + 1)
+        );
+        let error = JavaMetadata::from_probe_output("", &stderr)
+            .err()
+            .unwrap_or(JavaRuntimeError::MetadataValueTooLarge {
+                field: "java.vendor",
+                max_bytes: MAX_METADATA_VALUE_BYTES,
+            });
+
+        assert!(matches!(
+            error,
+            JavaRuntimeError::MetadataValueTooLarge {
+                field: "java.vendor",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn reports_version_value_too_large_without_echoing_raw_input() {
+        let error = JavaVersion::parse(&"1".repeat(MAX_METADATA_VALUE_BYTES + 1))
+            .err()
+            .unwrap_or(JavaRuntimeError::MetadataValueTooLarge {
+                field: "version",
+                max_bytes: MAX_METADATA_VALUE_BYTES,
+            });
+
+        assert!(matches!(
+            error,
+            JavaRuntimeError::MetadataValueTooLarge {
+                field: "version",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn reports_control_character_in_metadata_value() {
+        let error = JavaMetadata::from_release_file("JAVA_VERSION=\"21.0.5\u{1b}[31m\"")
+            .err()
+            .unwrap_or(JavaRuntimeError::MetadataValueContainsControl {
+                field: "JAVA_VERSION",
+            });
+
+        assert!(matches!(
+            error,
+            JavaRuntimeError::MetadataValueContainsControl {
+                field: "JAVA_VERSION"
+            }
+        ));
+    }
+
+    #[test]
+    fn reports_control_character_in_version_without_echoing_raw_input() {
+        let error = JavaVersion::parse("21.0.5\u{0}")
+            .err()
+            .unwrap_or(JavaRuntimeError::MetadataValueContainsControl { field: "version" });
+
+        assert!(matches!(
+            error,
+            JavaRuntimeError::MetadataValueContainsControl { field: "version" }
+        ));
     }
 
     #[test]

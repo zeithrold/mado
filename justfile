@@ -39,10 +39,13 @@ coverage-html:
     cargo llvm-cov --workspace --lib --bins --html
 
 fuzz-smoke:
-    cargo +nightly fuzz run icon_name -- -runs=256
+    cargo run -p xtask -- fuzz smoke
 
-fuzz:
-    cargo +nightly fuzz run icon_name
+fuzz target="icon-name":
+    cargo run -p xtask -- fuzz run {{ target }}
+
+fuzz-nightly:
+    cargo run -p xtask -- fuzz nightly
 
 mutants:
     cargo run -p xtask -- mutants target/mutants
@@ -54,4 +57,4 @@ check: fmt clippy coverage
 
 check-ci: check test-integration deny audit machete fuzz-smoke
 
-check-full: check-ci mutants-gate udeps fuzz
+check-full: check-ci mutants-gate udeps fuzz-nightly

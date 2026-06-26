@@ -4,11 +4,17 @@ use std::{
     process::{Command, ExitCode},
 };
 
+use clap::{Parser, Subcommand, ValueEnum, error::ErrorKind};
+use serde_json::Value;
+
 const DEFAULT_MUTANTS_DIR: &str = "target/mutants";
 const DEFAULT_MUTATION_THRESHOLD: u32 = 50;
+const DEFAULT_NIGHTLY_FUZZ_SECONDS: u32 = 300;
+const JAVA_RUNTIME_METADATA_CORPUS: &str = "fuzz/corpus/java_runtime_metadata";
+const JAVA_RUNTIME_METADATA_SEEDS: &str = "fuzz/seeds/java_runtime_metadata";
 
 fn main() -> ExitCode {
-    match run(env::args().skip(1).collect()) {
+    match run_from(env::args_os()) {
         Ok(code) => exit_code(code),
         Err(message) => {
             eprintln!("{message}");
@@ -17,27 +23,181 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(args: Vec<String>) -> Result<i32, String> {
-    let Some(command) = args.first().map(String::as_str) else {
-        print_usage();
-        return Ok(1);
-    };
-
-    match command {
-        "mutants" => run_mutants(args.get(1).map_or(DEFAULT_MUTANTS_DIR, String::as_str)),
-        "mutants-gate" => mutants_gate(
-            parse_threshold(args.get(1).map(String::as_str))?,
-            args.get(2).map_or(DEFAULT_MUTANTS_DIR, String::as_str),
-        ),
-        "-h" | "--help" | "help" => {
-            print_usage();
-            Ok(0)
+fn run_from<I, T>(args: I) -> Result<i32, String>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString> + Clone,
+{
+    let cli = match Cli::try_parse_from(args) {
+        Ok(cli) => cli,
+        Err(err)
+            if matches!(
+                err.kind(),
+                ErrorKind::DisplayHelp | ErrorKind::DisplayVersion
+            ) =>
+        {
+            err.print()
+                .map_err(|print_err| format!("printing clap help: {print_err}"))?;
+            return Ok(0);
         }
-        unknown => Err(format!("unknown xtask command: {unknown}")),
+        Err(err) => return Err(err.to_string()),
+    };
+    run(cli)
+}
+
+fn run(cli: Cli) -> Result<i32, String> {
+    match cli.command {
+        CommandKind::Fuzz { command } => run_fuzz(command),
+        CommandKind::Mutants { output_dir } => run_mutants(&output_dir),
+        CommandKind::MutantsGate {
+            threshold,
+            output_dir,
+        } => mutants_gate(threshold, &output_dir),
     }
 }
 
-fn run_mutants(output_dir: &str) -> Result<i32, String> {
+#[derive(Debug, Parser)]
+#[command(author, version, about = "Mado workspace maintenance tasks")]
+struct Cli {
+    #[command(subcommand)]
+    command: CommandKind,
+}
+
+#[derive(Debug, Subcommand)]
+enum CommandKind {
+    Fuzz {
+        #[command(subcommand)]
+        command: FuzzCommand,
+    },
+    Mutants {
+        #[arg(default_value = DEFAULT_MUTANTS_DIR)]
+        output_dir: PathBuf,
+    },
+    MutantsGate {
+        #[arg(default_value_t = DEFAULT_MUTATION_THRESHOLD)]
+        threshold: u32,
+        #[arg(default_value = DEFAULT_MUTANTS_DIR)]
+        output_dir: PathBuf,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum FuzzCommand {
+    Smoke,
+    Nightly,
+    Run {
+        #[arg(value_enum, default_value_t = FuzzTarget::IconName)]
+        target: FuzzTarget,
+        #[arg(long)]
+        seconds: Option<u32>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, ValueEnum)]
+enum FuzzTarget {
+    IconName,
+    JavaRuntimeMetadata,
+}
+
+impl FuzzTarget {
+    const ALL: &'static [Self] = &[Self::IconName, Self::JavaRuntimeMetadata];
+
+    const fn cargo_name(self) -> &'static str {
+        match self {
+            Self::IconName => "icon_name",
+            Self::JavaRuntimeMetadata => "java_runtime_metadata",
+        }
+    }
+
+    const fn corpus_paths(self) -> &'static [&'static str] {
+        match self {
+            Self::IconName => &[],
+            Self::JavaRuntimeMetadata => {
+                &[JAVA_RUNTIME_METADATA_CORPUS, JAVA_RUNTIME_METADATA_SEEDS]
+            }
+        }
+    }
+
+    const fn smoke_args(self) -> &'static [&'static str] {
+        match self {
+            Self::IconName | Self::JavaRuntimeMetadata => &["-runs=256"],
+        }
+    }
+
+    const fn run_args(self) -> &'static [&'static str] {
+        match self {
+            Self::IconName => &[],
+            Self::JavaRuntimeMetadata => &["-max_len=131072"],
+        }
+    }
+
+    const fn nightly_seconds(self) -> u32 {
+        match self {
+            Self::IconName | Self::JavaRuntimeMetadata => DEFAULT_NIGHTLY_FUZZ_SECONDS,
+        }
+    }
+}
+
+fn run_fuzz(command: FuzzCommand) -> Result<i32, String> {
+    match command {
+        FuzzCommand::Smoke => {
+            for target in FuzzTarget::ALL.iter().copied() {
+                let code = run_fuzz_target(target, target.smoke_args())?;
+                if code != 0 {
+                    return Ok(code);
+                }
+            }
+            Ok(0)
+        }
+        FuzzCommand::Nightly => {
+            for target in FuzzTarget::ALL.iter().copied() {
+                let mut args = target.run_args().to_vec();
+                let max_total_time = format!("-max_total_time={}", target.nightly_seconds());
+                args.push(&max_total_time);
+
+                let code = run_fuzz_target(target, &args)?;
+                if code != 0 {
+                    return Ok(code);
+                }
+            }
+            Ok(0)
+        }
+        FuzzCommand::Run { target, seconds } => {
+            let mut args = target.run_args().to_vec();
+            let max_total_time;
+            if let Some(seconds) = seconds {
+                max_total_time = format!("-max_total_time={seconds}");
+                args.push(&max_total_time);
+            }
+            run_fuzz_target(target, &args)
+        }
+    }
+}
+
+fn run_fuzz_target(target: FuzzTarget, libfuzzer_args: &[&str]) -> Result<i32, String> {
+    let mut command = Command::new("cargo");
+    command
+        .arg("+nightly")
+        .arg("fuzz")
+        .arg("run")
+        .arg(target.cargo_name());
+
+    for path in target.corpus_paths() {
+        command.arg(path);
+    }
+
+    if !libfuzzer_args.is_empty() {
+        command.arg("--");
+        command.args(libfuzzer_args);
+    }
+
+    command_status(
+        command,
+        &format!("running fuzz target {}", target.cargo_name()),
+    )
+}
+
+fn run_mutants(output_dir: &Path) -> Result<i32, String> {
     let cache_dir = env::var_os("LUCIDE_STATIC_CACHE_DIR")
         .map(PathBuf::from)
         .unwrap_or(
@@ -47,34 +207,28 @@ fn run_mutants(output_dir: &str) -> Result<i32, String> {
                 .join("lucide-static-cache"),
         );
 
-    let status = Command::new("cargo")
+    let mut command = Command::new("cargo");
+    command
         .args([
             "mutants",
             "--workspace",
             "--copy-target",
             "false",
             "--output",
-            output_dir,
-            "--",
-            "--lib",
-            "--bins",
         ])
-        .env("LUCIDE_STATIC_CACHE_DIR", cache_dir)
-        .status()
-        .map_err(|err| format!("running cargo mutants: {err}"))?;
+        .arg(output_dir)
+        .args(["--", "--lib", "--bins"])
+        .env("LUCIDE_STATIC_CACHE_DIR", cache_dir);
 
-    match status.code() {
-        Some(0 | 2) => Ok(0),
-        Some(code) => Ok(code),
-        None => Ok(1),
+    match command_status(command, "running cargo mutants")? {
+        0 | 2 => Ok(0),
+        code => Ok(code),
     }
 }
 
-fn mutants_gate(threshold: u32, output_dir: &str) -> Result<i32, String> {
+fn mutants_gate(threshold: u32, output_dir: &Path) -> Result<i32, String> {
     let mutants_status = run_mutants(output_dir)?;
-    let outcomes_path = Path::new(output_dir)
-        .join("mutants.out")
-        .join("outcomes.json");
+    let outcomes_path = output_dir.join("mutants.out").join("outcomes.json");
 
     if !outcomes_path.is_file() {
         eprintln!(
@@ -90,7 +244,7 @@ fn mutants_gate(threshold: u32, output_dir: &str) -> Result<i32, String> {
 
     let outcomes = fs::read_to_string(&outcomes_path)
         .map_err(|err| format!("reading {}: {err}", outcomes_path.display()))?;
-    let summary = mutation_summary(&outcomes);
+    let summary = mutation_summary(&outcomes)?;
 
     if summary.total() == 0 {
         println!("no viable mutants were tested");
@@ -112,43 +266,42 @@ fn mutants_gate(threshold: u32, output_dir: &str) -> Result<i32, String> {
     Ok(0)
 }
 
-fn parse_threshold(value: Option<&str>) -> Result<u32, String> {
-    value.map_or(Ok(DEFAULT_MUTATION_THRESHOLD), |value| {
-        value
-            .parse()
-            .map_err(|err| format!("invalid mutation threshold {value:?}: {err}"))
-    })
+fn command_status(mut command: Command, context: &str) -> Result<i32, String> {
+    let status = command
+        .status()
+        .map_err(|err| format!("{context}: {err}"))?;
+
+    Ok(status.code().unwrap_or(1))
 }
 
-fn mutation_summary(outcomes: &str) -> MutationSummary {
-    MutationSummary {
-        caught: count_summary(outcomes, "CaughtMutant"),
-        missed: count_summary(outcomes, "MissedMutant"),
-        timeout: count_summary(outcomes, "Timeout"),
+fn mutation_summary(outcomes: &str) -> Result<MutationSummary, String> {
+    let value: Value = serde_json::from_str(outcomes)
+        .map_err(|err| format!("parsing cargo-mutants JSON: {err}"))?;
+    let Some(outcomes) = value
+        .as_array()
+        .or_else(|| value.get("outcomes").and_then(Value::as_array))
+    else {
+        return Err("cargo-mutants outcomes JSON must contain an outcomes array".to_string());
+    };
+
+    let mut summary = MutationSummary::default();
+    for outcome in outcomes {
+        match outcome.get("summary").and_then(Value::as_str) {
+            Some("CaughtMutant") => summary.caught += 1,
+            Some("MissedMutant") => summary.missed += 1,
+            Some("Timeout") => summary.timeout += 1,
+            _ => {}
+        }
     }
-}
 
-fn count_summary(outcomes: &str, summary: &str) -> u32 {
-    outcomes
-        .matches(&format!(r#""summary": "{summary}""#))
-        .count()
-        .try_into()
-        .unwrap_or(u32::MAX)
-}
-
-fn print_usage() {
-    println!(
-        "usage:
-  cargo run -p xtask -- mutants [output-dir]
-  cargo run -p xtask -- mutants-gate [threshold] [output-dir]"
-    );
+    Ok(summary)
 }
 
 fn exit_code(code: i32) -> ExitCode {
     u8::try_from(code).map_or(ExitCode::FAILURE, ExitCode::from)
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Default, Eq, PartialEq)]
 struct MutationSummary {
     caught: u32,
     missed: u32,
@@ -156,36 +309,69 @@ struct MutationSummary {
 }
 
 impl MutationSummary {
-    fn total(&self) -> u32 {
+    const fn total(&self) -> u32 {
         self.caught + self.missed + self.timeout
     }
 
-    fn score(&self) -> u32 {
+    const fn score(&self) -> u32 {
         self.caught * 100 / self.total()
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use clap::CommandFactory as _;
+
     use super::*;
 
     #[test]
     fn counts_only_viable_mutant_summaries() {
         let outcomes = r#"
-          {"summary": "CaughtMutant"}
-          {"summary": "MissedMutant"}
-          {"summary": "Timeout"}
-          {"summary": "Unviable"}
-          {"summary": "CaughtMutant"}
+        {
+          "outcomes": [
+            {"summary": "CaughtMutant"},
+            {"summary": "MissedMutant"},
+            {"summary": "Timeout"},
+            {"summary": "Unviable"},
+            {"summary": "CaughtMutant"}
+          ]
+        }
         "#;
 
         assert_eq!(
             mutation_summary(outcomes),
-            MutationSummary {
+            Ok(MutationSummary {
                 caught: 2,
                 missed: 1,
                 timeout: 1,
-            }
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_mutation_summary_json() {
+        let error = mutation_summary("not json").unwrap_err();
+
+        assert!(error.contains("parsing cargo-mutants JSON"));
+    }
+
+    #[test]
+    fn accepts_legacy_top_level_array_mutation_summary_json() {
+        assert_eq!(
+            mutation_summary(r#"[{"summary":"CaughtMutant"}]"#),
+            Ok(MutationSummary {
+                caught: 1,
+                missed: 0,
+                timeout: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_missing_mutation_outcomes_array() {
+        assert_eq!(
+            mutation_summary(r#"{"summary":"CaughtMutant"}"#),
+            Err("cargo-mutants outcomes JSON must contain an outcomes array".to_string())
         );
     }
 
@@ -201,41 +387,130 @@ mod tests {
     }
 
     #[test]
-    fn parses_default_mutation_threshold() {
-        assert_eq!(parse_threshold(None), Ok(DEFAULT_MUTATION_THRESHOLD));
+    fn parses_mutants_command_defaults() {
+        let cli = Cli::try_parse_from(["xtask", "mutants"]).unwrap();
+
+        assert!(matches!(
+            cli.command,
+            CommandKind::Mutants { ref output_dir } if output_dir == Path::new(DEFAULT_MUTANTS_DIR)
+        ));
+    }
+
+    #[test]
+    fn parses_mutants_gate_defaults() {
+        let cli = Cli::try_parse_from(["xtask", "mutants-gate"]).unwrap();
+
+        assert!(matches!(
+            cli.command,
+            CommandKind::MutantsGate {
+                threshold: DEFAULT_MUTATION_THRESHOLD,
+                ref output_dir,
+            } if output_dir == Path::new(DEFAULT_MUTANTS_DIR)
+        ));
     }
 
     #[test]
     fn parses_custom_mutation_threshold() {
-        assert_eq!(parse_threshold(Some("75")), Ok(75));
+        let cli = Cli::try_parse_from(["xtask", "mutants-gate", "75", "target/custom"]).unwrap();
+
+        assert!(matches!(
+            cli.command,
+            CommandKind::MutantsGate {
+                threshold: 75,
+                ref output_dir,
+            } if output_dir == Path::new("target/custom")
+        ));
     }
 
     #[test]
     fn reports_invalid_mutation_threshold() {
-        let error = parse_threshold(Some("high")).unwrap_err();
+        let error = Cli::try_parse_from(["xtask", "mutants-gate", "high"]).unwrap_err();
 
-        assert!(error.contains("invalid mutation threshold"));
-        assert!(error.contains("high"));
+        assert!(error.to_string().contains("invalid digit"));
+    }
+
+    #[test]
+    fn parses_fuzz_smoke_command() {
+        let cli = Cli::try_parse_from(["xtask", "fuzz", "smoke"]).unwrap();
+
+        assert!(matches!(
+            cli.command,
+            CommandKind::Fuzz {
+                command: FuzzCommand::Smoke
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_fuzz_nightly_command() {
+        let cli = Cli::try_parse_from(["xtask", "fuzz", "nightly"]).unwrap();
+
+        assert!(matches!(
+            cli.command,
+            CommandKind::Fuzz {
+                command: FuzzCommand::Nightly
+            }
+        ));
+    }
+
+    #[test]
+    fn registered_fuzz_targets_match_cli_variants() {
+        assert_eq!(FuzzTarget::ALL, FuzzTarget::value_variants());
+    }
+
+    #[test]
+    fn parses_fuzz_run_defaults() {
+        let cli = Cli::try_parse_from(["xtask", "fuzz", "run"]).unwrap();
+
+        assert!(matches!(
+            cli.command,
+            CommandKind::Fuzz {
+                command: FuzzCommand::Run {
+                    target: FuzzTarget::IconName,
+                    seconds: None,
+                }
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_fuzz_run_java_runtime_metadata() {
+        let cli = Cli::try_parse_from([
+            "xtask",
+            "fuzz",
+            "run",
+            "java-runtime-metadata",
+            "--seconds",
+            "300",
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            cli.command,
+            CommandKind::Fuzz {
+                command: FuzzCommand::Run {
+                    target: FuzzTarget::JavaRuntimeMetadata,
+                    seconds: Some(300),
+                }
+            }
+        ));
     }
 
     #[test]
     fn run_reports_usage_failure_when_command_is_missing() {
-        assert_eq!(run(Vec::new()), Ok(1));
+        assert!(run_from(["xtask"]).is_err());
     }
 
     #[test]
-    fn run_reports_success_for_help_commands() {
-        for command in ["-h", "--help", "help"] {
-            assert_eq!(run(vec![command.to_string()]), Ok(0));
-        }
+    fn clap_reports_help_as_display_help() {
+        let error = Cli::try_parse_from(["xtask", "--help"]).unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::DisplayHelp);
     }
 
     #[test]
     fn run_rejects_unknown_commands() {
-        assert_eq!(
-            run(vec!["wat".to_string()]),
-            Err("unknown xtask command: wat".to_string())
-        );
+        assert!(run_from(["xtask", "wat"]).is_err());
     }
 
     #[test]
@@ -255,5 +530,10 @@ mod tests {
         assert_eq!(exit_code(1), ExitCode::FAILURE);
         assert_eq!(exit_code(256), ExitCode::FAILURE);
         assert_eq!(exit_code(-1), ExitCode::FAILURE);
+    }
+
+    #[test]
+    fn clap_definition_is_valid() {
+        Cli::command().debug_assert();
     }
 }

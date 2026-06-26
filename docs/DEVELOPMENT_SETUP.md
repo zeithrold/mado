@@ -218,6 +218,8 @@ Reserve the daily or explicitly requested deep gate for:
 just check-full
 ```
 
+This gate delegates bounded longer fuzz runs to `xtask`, which runs every registered nightly fuzz target.
+
 Docs-only changes do not require Rust tests. Code changes should run at least the smallest relevant local command, and shared core behavior should run `just check` when practical.
 
 ## Troubleshooting

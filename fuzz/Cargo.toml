@@ -9,10 +9,18 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
+mado-java-runtime = { path = "../crates/java-runtime" }
 
 [[bin]]
 name = "icon_name"
 path = "fuzz_targets/icon_name.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "java_runtime_metadata"
+path = "fuzz_targets/java_runtime_metadata.rs"
 test = false
 doc = false
 bench = false

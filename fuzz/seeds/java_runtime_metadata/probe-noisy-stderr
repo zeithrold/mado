@@ -1,0 +1,6 @@
+Picked up JAVA_TOOL_OPTIONS: -Dsome.flag=true
+Property settings:
+    java.vendor = Amazon.com Inc.
+    os.arch = amd64
+    java.version = 17.0.11
+openjdk version "17.0.11" 2024-04-16
