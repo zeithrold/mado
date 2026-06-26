@@ -46,13 +46,16 @@ jobs:
         with:
           components: clippy, rustfmt, llvm-tools-preview
 
+      - name: Install nightly Rust
+        run: rustup toolchain install nightly --profile minimal
+
       - name: Cache cargo data
         uses: Swatinem/rust-cache@v2
 
       - name: Install quality tools
         uses: taiki-e/install-action@v2
         with:
-          tool: just,cargo-deny,cargo-audit,cargo-machete,cargo-llvm-cov
+          tool: just,cargo-deny,cargo-audit,cargo-machete,cargo-llvm-cov,cargo-fuzz
 
       - name: Run workspace quality gate
         run: just check-ci

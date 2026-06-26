@@ -40,6 +40,7 @@ Use the existing Rust workspace conventions:
 - `fuzz/` contains fuzz targets for invariants that deserve randomized coverage.
 - `scripts/` contains quality-gate helpers.
 - `docs/plan/` contains architecture planning documents.
+- `docs/DEVELOPMENT_SETUP.md` is the human-first setup guide for macOS, Linux, and Windows. Agents should follow its Agent Notes section and stop for heavyweight GUI installers such as Visual Studio or Xcode prompts.
 
 Prefer small crates with explicit boundaries over broad application code. When adding a crate, wire it through the workspace manifest and give it focused unit tests before integrating it into the app.
 
@@ -54,8 +55,14 @@ Use the existing `justfile` recipes:
 - `just coverage` for local unit-test line coverage.
 - `just mutants-gate` for mutation score enforcement after `cargo-mutants` output exists.
 - `just check` for the local development gate, including unit-test coverage.
-- `just check-ci` for the per-push and pull request CI gate, including integration tests.
-- `just check-full` for the daily full gate, including mutation, nightly-only checks, and fuzz smoke.
+- `just check-ci` for the per-push and pull request CI gate, including integration tests and fuzz smoke.
+- `just check-full` for the daily full gate, including mutation, nightly-only checks, and fuzz.
+
+The three check tiers serve different feedback loops:
+
+- `just check` serves local development. It is the default gate before handing off code changes because it catches formatting, lint, unit behavior, and unit-test coverage regressions without depending on external fixtures.
+- `just check-ci` serves push and pull request confidence. It includes the local gate, then adds integration tests, dependency hygiene checks, and fuzz smoke so cross-crate behavior, real-world metadata assumptions, supply-chain issues, and fuzz harness health are verified by CI.
+- `just check-full` serves scheduled deep validation. It includes the CI gate, then adds mutation enforcement, nightly-only unused-dependency checks, and fuzz so slower or toolchain-sensitive checks do not block ordinary iteration.
 
 Docs-only changes do not require Rust tests. Code changes should at least run the smallest relevant local test command. Shared/core behavior should run `just check` locally, rely on `just check-ci` for integration coverage in CI, and reserve `just check-full` for the scheduled daily gate.
 

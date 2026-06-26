@@ -33,17 +33,13 @@ udeps:
     cargo +nightly udeps --workspace --all-targets
 
 coverage:
-    cargo llvm-cov --workspace --lib --bins --fail-under-lines {{coverage_threshold}}
+    cargo llvm-cov --workspace --lib --bins --fail-under-lines {{ coverage_threshold }}
 
 coverage-html:
     cargo llvm-cov --workspace --lib --bins --html
 
 fuzz-smoke:
-    if [ "$(uname -s)" = "Linux" ]; then \
-        cargo +nightly fuzz run --target x86_64-unknown-linux-gnu icon_name -- -runs=256; \
-    else \
-        cargo +nightly fuzz run icon_name -- -runs=256; \
-    fi
+    cargo +nightly fuzz run icon_name -- -runs=256
 
 fuzz:
     cargo +nightly fuzz run icon_name
@@ -52,10 +48,10 @@ mutants:
     cargo run -p xtask -- mutants target/mutants
 
 mutants-gate:
-    cargo run -p xtask -- mutants-gate {{mutation_threshold}} target/mutants
+    cargo run -p xtask -- mutants-gate {{ mutation_threshold }} target/mutants
 
 check: fmt clippy coverage
 
-check-ci: check test-integration deny audit machete
+check-ci: check test-integration deny audit machete fuzz-smoke
 
-check-full: check-ci mutants-gate udeps fuzz-smoke
+check-full: check-ci mutants-gate udeps fuzz

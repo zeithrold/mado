@@ -56,9 +56,15 @@ The default path for implementation work is:
 1. Add or update the smallest model or behavior slice.
 2. Write unit tests that pin down deterministic behavior.
 3. Run `just check` locally; it formats, lints, and enforces unit-test line coverage.
-4. Let `just check-ci` run in pull request and push CI; it adds integration tests that may use real-world Minecraft metadata and JDK fixtures.
-5. Reserve `just check-full` for the daily scheduled gate; it adds mutation, nightly-only dependency checks, and fuzz smoke.
+4. Let `just check-ci` run in pull request and push CI; it adds integration tests that may use real-world Minecraft metadata and JDK fixtures, plus fuzz smoke.
+5. Reserve `just check-full` for the daily scheduled gate; it adds mutation, nightly-only dependency checks, and fuzz.
 6. Connect the slice to the demo UI only after the core boundary is stable.
+
+The three tiers intentionally serve different scopes:
+
+- `just check` is the local development loop. It should be fast and deterministic enough for contributors and agents to run before finishing ordinary code changes.
+- `just check-ci` is the per-push and pull request loop. It proves the local checks still hold when integration coverage, dependency hygiene, and fuzz harness health checks are added in CI.
+- `just check-full` is the scheduled confidence loop. It runs the slowest and most toolchain-sensitive checks, including mutation, nightly-only dependency analysis, and fuzz, so those signals do not slow down everyday work.
 
 For integration tests that touch external network APIs or downloadable fixtures, verify provider URLs and parameters with lightweight `curl` metadata requests before writing the test logic. These tests may be CI-only or locally gated, so early curl checks make provider API mistakes visible without requiring a full local fixture run.
 
