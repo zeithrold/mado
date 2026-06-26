@@ -9,11 +9,12 @@ The launcher should expose what it is doing without relying on implicit UI flags
 Suggested states:
 
 - `Idle`.
-- `Resolving`.
-- `Downloading`.
-- `Preparing`.
+- `ResolvingVersion`.
+- `PreparingVersionFiles`.
+- `PreparingRuntime`.
+- `BuildingLaunchPlan`.
 - `Ready`.
-- `Launching`.
+- `LaunchingProcess`.
 - `Running`.
 - `Exited`.
 - `Failed`.
@@ -28,6 +29,8 @@ State should connect instance selection, resolution, downloads, launch planning,
 
 - State transitions must be explicit and testable.
 - Failures must preserve enough context to explain which stage failed.
+- Version metadata preparation must be visible as a distinct state from runtime artifact preparation.
+- A launch attempt must not repeatedly alternate between version resolution and user-visible metadata preparation.
 - `Running` must represent an active child process.
 - `Exited` must include exit code information when available.
 - Captured logs may be attached for viewing or export, but not analyzed.
@@ -41,4 +44,3 @@ State should connect instance selection, resolution, downloads, launch planning,
 ## First Implementation Slice
 
 Define the state enum and transition helpers in a core crate. Add tests for allowed transitions, failure propagation, process exit handling, and the distinction between download progress and launch lifecycle state.
-
