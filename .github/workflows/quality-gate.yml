@@ -55,7 +55,10 @@ jobs:
       - name: Install quality tools
         uses: taiki-e/install-action@v2
         with:
-          tool: just,cargo-deny,cargo-audit,cargo-machete,cargo-llvm-cov,cargo-fuzz
+          tool: just,cargo-deny,cargo-audit,cargo-machete,cargo-llvm-cov
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
 
       - name: Run workspace quality gate
         run: just check-ci
