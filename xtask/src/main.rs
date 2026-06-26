@@ -10,6 +10,7 @@ use serde_json::Value;
 const DEFAULT_MUTANTS_DIR: &str = "target/mutants";
 const DEFAULT_MUTATION_THRESHOLD: u32 = 50;
 const DEFAULT_NIGHTLY_FUZZ_SECONDS: u32 = 300;
+const ICON_NAME_CORPUS: &str = "fuzz/corpus/icon_name";
 const JAVA_RUNTIME_METADATA_CORPUS: &str = "fuzz/corpus/java_runtime_metadata";
 const JAVA_RUNTIME_METADATA_SEEDS: &str = "fuzz/seeds/java_runtime_metadata";
 
@@ -102,20 +103,31 @@ enum FuzzTarget {
 impl FuzzTarget {
     const ALL: &'static [Self] = &[Self::IconName, Self::JavaRuntimeMetadata];
 
-    const fn cargo_name(self) -> &'static str {
+    const fn config(self) -> FuzzTargetConfig {
         match self {
-            Self::IconName => "icon_name",
-            Self::JavaRuntimeMetadata => "java_runtime_metadata",
+            Self::IconName => FuzzTargetConfig {
+                cargo_name: "icon_name",
+                corpus_dir: ICON_NAME_CORPUS,
+                seed_dir: None,
+            },
+            Self::JavaRuntimeMetadata => FuzzTargetConfig {
+                cargo_name: "java_runtime_metadata",
+                corpus_dir: JAVA_RUNTIME_METADATA_CORPUS,
+                seed_dir: Some(JAVA_RUNTIME_METADATA_SEEDS),
+            },
         }
     }
 
-    const fn corpus_paths(self) -> &'static [&'static str] {
-        match self {
-            Self::IconName => &[],
-            Self::JavaRuntimeMetadata => {
-                &[JAVA_RUNTIME_METADATA_CORPUS, JAVA_RUNTIME_METADATA_SEEDS]
-            }
-        }
+    const fn cargo_name(self) -> &'static str {
+        self.config().cargo_name
+    }
+
+    const fn corpus_dir(self) -> &'static str {
+        self.config().corpus_dir
+    }
+
+    const fn seed_dir(self) -> Option<&'static str> {
+        self.config().seed_dir
     }
 
     const fn smoke_args(self) -> &'static [&'static str] {
@@ -136,6 +148,13 @@ impl FuzzTarget {
             Self::IconName | Self::JavaRuntimeMetadata => DEFAULT_NIGHTLY_FUZZ_SECONDS,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct FuzzTargetConfig {
+    cargo_name: &'static str,
+    corpus_dir: &'static str,
+    seed_dir: Option<&'static str>,
 }
 
 fn run_fuzz(command: FuzzCommand) -> Result<i32, String> {
@@ -175,6 +194,10 @@ fn run_fuzz(command: FuzzCommand) -> Result<i32, String> {
 }
 
 fn run_fuzz_target(target: FuzzTarget, libfuzzer_args: &[&str]) -> Result<i32, String> {
+    let workspace_root =
+        env::current_dir().map_err(|err| format!("resolving current directory: {err}"))?;
+    let input_paths = prepare_fuzz_input_paths(target, &workspace_root)?;
+
     let mut command = Command::new("cargo");
     command
         .arg("+nightly")
@@ -182,7 +205,7 @@ fn run_fuzz_target(target: FuzzTarget, libfuzzer_args: &[&str]) -> Result<i32, S
         .arg("run")
         .arg(target.cargo_name());
 
-    for path in target.corpus_paths() {
+    for path in input_paths {
         command.arg(path);
     }
 
@@ -195,6 +218,34 @@ fn run_fuzz_target(target: FuzzTarget, libfuzzer_args: &[&str]) -> Result<i32, S
         command,
         &format!("running fuzz target {}", target.cargo_name()),
     )
+}
+
+fn prepare_fuzz_input_paths(
+    target: FuzzTarget,
+    workspace_root: &Path,
+) -> Result<Vec<PathBuf>, String> {
+    let corpus_dir = target.corpus_dir();
+    let corpus_path = workspace_root.join(corpus_dir);
+    fs::create_dir_all(&corpus_path).map_err(|err| {
+        format!(
+            "creating fuzz corpus directory {}: {err}",
+            corpus_path.display()
+        )
+    })?;
+
+    let mut input_paths = vec![PathBuf::from(corpus_dir)];
+    if let Some(seed_dir) = target.seed_dir() {
+        let seed_path = workspace_root.join(seed_dir);
+        if !seed_path.is_dir() {
+            return Err(format!(
+                "missing fuzz seed directory: {}",
+                seed_path.display()
+            ));
+        }
+        input_paths.push(PathBuf::from(seed_dir));
+    }
+
+    Ok(input_paths)
 }
 
 fn run_mutants(output_dir: &Path) -> Result<i32, String> {
@@ -320,6 +371,11 @@ impl MutationSummary {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        process,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
     use clap::CommandFactory as _;
 
     use super::*;
@@ -459,6 +515,69 @@ mod tests {
     }
 
     #[test]
+    fn registered_fuzz_targets_use_deterministic_corpus_directories() {
+        for target in FuzzTarget::ALL {
+            assert_eq!(
+                target.corpus_dir(),
+                format!("fuzz/corpus/{}", target.cargo_name())
+            );
+        }
+    }
+
+    #[test]
+    fn java_runtime_metadata_declares_curated_seed_directory() {
+        assert_eq!(
+            FuzzTarget::JavaRuntimeMetadata.seed_dir(),
+            Some(JAVA_RUNTIME_METADATA_SEEDS)
+        );
+    }
+
+    #[test]
+    fn prepares_missing_generated_corpus_directory() {
+        let workspace = temp_workspace("icon-name-corpus");
+
+        let input_paths = prepare_fuzz_input_paths(FuzzTarget::IconName, &workspace).unwrap();
+
+        assert!(workspace.join(ICON_NAME_CORPUS).is_dir());
+        assert_eq!(input_paths, vec![PathBuf::from(ICON_NAME_CORPUS)]);
+
+        cleanup_workspace(workspace);
+    }
+
+    #[test]
+    fn passes_existing_seed_directory_without_creating_it() {
+        let workspace = temp_workspace("java-runtime-metadata-seeds");
+        fs::create_dir_all(workspace.join(JAVA_RUNTIME_METADATA_SEEDS)).unwrap();
+
+        let input_paths =
+            prepare_fuzz_input_paths(FuzzTarget::JavaRuntimeMetadata, &workspace).unwrap();
+
+        assert!(workspace.join(JAVA_RUNTIME_METADATA_CORPUS).is_dir());
+        assert_eq!(
+            input_paths,
+            vec![
+                PathBuf::from(JAVA_RUNTIME_METADATA_CORPUS),
+                PathBuf::from(JAVA_RUNTIME_METADATA_SEEDS)
+            ]
+        );
+
+        cleanup_workspace(workspace);
+    }
+
+    #[test]
+    fn reports_missing_declared_seed_directory() {
+        let workspace = temp_workspace("missing-java-runtime-metadata-seeds");
+
+        let error = prepare_fuzz_input_paths(FuzzTarget::JavaRuntimeMetadata, &workspace)
+            .expect_err("missing seed directory should fail");
+
+        assert!(workspace.join(JAVA_RUNTIME_METADATA_CORPUS).is_dir());
+        assert!(error.contains("missing fuzz seed directory"));
+
+        cleanup_workspace(workspace);
+    }
+
+    #[test]
     fn parses_fuzz_run_defaults() {
         let cli = Cli::try_parse_from(["xtask", "fuzz", "run"]).unwrap();
 
@@ -535,5 +654,19 @@ mod tests {
     #[test]
     fn clap_definition_is_valid() {
         Cli::command().debug_assert();
+    }
+
+    fn temp_workspace(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = env::temp_dir().join(format!("mado-xtask-{name}-{}-{nanos}", process::id()));
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    fn cleanup_workspace(path: PathBuf) {
+        fs::remove_dir_all(path).unwrap();
     }
 }
