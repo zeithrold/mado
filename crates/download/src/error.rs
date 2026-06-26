@@ -74,8 +74,41 @@ pub enum ArtifactVerifyError {
     },
 }
 
+#[derive(Debug, Error)]
+pub enum DownloadStorageError {
+    #[error("failed to create parent directory for {path}: {source}")]
+    CreateParentDirectory { path: PathBuf, source: io::Error },
+    #[error("failed to write partial artifact {path}: {source}")]
+    WritePartial { path: PathBuf, source: io::Error },
+    #[error("failed to write partial metadata {path}: {source}")]
+    WritePartialMetadata { path: PathBuf, source: io::Error },
+    #[error("failed to read partial metadata {path}: {source}")]
+    ReadPartialMetadata { path: PathBuf, source: io::Error },
+    #[error("failed to parse partial metadata {path}: {source}")]
+    ParsePartialMetadata {
+        path: PathBuf,
+        source: serde_json::Error,
+    },
+    #[error("partial metadata {path} has unsupported schema version {version}")]
+    UnsupportedPartialMetadataVersion { path: PathBuf, version: u32 },
+    #[error("failed to remove partial metadata {path}: {source}")]
+    RemovePartialMetadata { path: PathBuf, source: io::Error },
+    #[error("failed to promote partial artifact from {partial_path} to {target_path}: {source}")]
+    PromotePartial {
+        partial_path: PathBuf,
+        target_path: PathBuf,
+        source: io::Error,
+    },
+    #[error("failed to remove promoted partial artifact {path}: {source}")]
+    RemovePromotedPartial { path: PathBuf, source: io::Error },
+    #[error("failed to fsync {path}: {source}")]
+    Fsync { path: PathBuf, source: io::Error },
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum DownloadBackendError {
+    #[error("backend setup failed: {message}")]
+    Setup { message: String },
     #[error("backend failed to start job {id:?}: {message}")]
     StartJob { id: DownloadJobId, message: String },
     #[error("backend failed to stop job {id:?}: {message}")]

@@ -13,6 +13,29 @@ pub struct ArtifactVerification {
     pub size: u64,
 }
 
+#[derive(Debug)]
+pub enum ExistingArtifactDecision {
+    Ready(ArtifactVerification),
+    Missing { path: PathBuf },
+    NeedsRedownload { reason: ArtifactRedownloadReason },
+    Failed { error: ArtifactVerifyError },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ArtifactRedownloadReason {
+    SizeMismatch {
+        path: PathBuf,
+        expected: u64,
+        actual: u64,
+    },
+    ChecksumMismatch {
+        path: PathBuf,
+        algorithm: ChecksumAlgorithm,
+        expected: String,
+        actual: String,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArtifactVerifier {
     integrity: DownloadIntegrityConfig,
@@ -28,6 +51,31 @@ impl ArtifactVerifier {
         job: &DownloadJobSpec,
     ) -> Result<ArtifactVerification, ArtifactVerifyError> {
         self.verify_path(job, &job.target_path)
+    }
+
+    pub fn classify_existing_job_target(&self, job: &DownloadJobSpec) -> ExistingArtifactDecision {
+        self.classify_existing_path(job, &job.target_path)
+    }
+
+    pub fn classify_existing_path(
+        &self,
+        job: &DownloadJobSpec,
+        path: impl AsRef<Path>,
+    ) -> ExistingArtifactDecision {
+        let path = path.as_ref();
+        match self.verify_path(job, path) {
+            Ok(verification) => ExistingArtifactDecision::Ready(verification),
+            Err(ArtifactVerifyError::ReadMetadata { path, source })
+                if source.kind() == std::io::ErrorKind::NotFound =>
+            {
+                ExistingArtifactDecision::Missing { path }
+            }
+            Err(error) => self
+                .redownload_reason(&error)
+                .map_or(ExistingArtifactDecision::Failed { error }, |reason| {
+                    ExistingArtifactDecision::NeedsRedownload { reason }
+                }),
+        }
     }
 
     pub fn verify_path(
@@ -73,6 +121,34 @@ impl ArtifactVerifier {
             path: path.to_path_buf(),
             size,
         })
+    }
+
+    fn redownload_reason(&self, error: &ArtifactVerifyError) -> Option<ArtifactRedownloadReason> {
+        match error {
+            ArtifactVerifyError::SizeMismatch {
+                path,
+                expected,
+                actual,
+            } => Some(ArtifactRedownloadReason::SizeMismatch {
+                path: path.clone(),
+                expected: *expected,
+                actual: *actual,
+            }),
+            ArtifactVerifyError::ChecksumMismatch {
+                path,
+                algorithm,
+                expected,
+                actual,
+            } if self.integrity.checksum_mismatch_redownload_once => {
+                Some(ArtifactRedownloadReason::ChecksumMismatch {
+                    path: path.clone(),
+                    algorithm: *algorithm,
+                    expected: expected.clone(),
+                    actual: actual.clone(),
+                })
+            }
+            _ => None,
+        }
     }
 }
 

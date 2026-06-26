@@ -3,6 +3,7 @@ mod config;
 mod error;
 mod event;
 mod manager;
+mod native_http;
 mod plan;
 mod service;
 mod storage;
@@ -16,13 +17,14 @@ pub use config::{
 };
 pub use error::{
     ArtifactVerifyError, DownloadBackendError, DownloadConfigError, DownloadManagerError,
-    DownloadPlanError, DownloadServiceError,
+    DownloadPlanError, DownloadServiceError, DownloadStorageError,
 };
 pub use event::{
     DownloadCommand, DownloadEvent, DownloadJobState, DownloadManagerAction, PlanTerminalState,
     WorkerReport, WorkerStopReason,
 };
 pub use manager::DownloadManagerState;
+pub use native_http::{NativeHttpBackend, NativeHttpBackendConfig};
 pub use plan::{
     Checksum, ChecksumAlgorithm, DownloadArtifactKind, DownloadJobId, DownloadJobPolicy,
     DownloadJobSpec, DownloadPlan, DownloadUrl,
@@ -31,8 +33,13 @@ pub use service::{
     DownloadEventStream, DownloadService, DownloadServiceHandle, DownloadServiceInput,
     DownloadServiceLoop,
 };
-pub use storage::{DownloadStoragePaths, PartialDownloadMetadata, ResumeValidator};
-pub use verify::{ArtifactVerification, ArtifactVerifier};
+pub use storage::{
+    DownloadStoragePaths, PARTIAL_DOWNLOAD_METADATA_SCHEMA_VERSION, PartialDownloadMetadata,
+    ResumeValidator,
+};
+pub use verify::{
+    ArtifactRedownloadReason, ArtifactVerification, ArtifactVerifier, ExistingArtifactDecision,
+};
 
 #[cfg(test)]
 mod tests {
@@ -267,6 +274,95 @@ mod tests {
     }
 
     #[test]
+    fn partial_metadata_round_trips_with_schema_version() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let temp_dir = tempfile::tempdir()?;
+        let target = temp_dir.path().join("libraries/example.jar");
+        let config = DownloadStorageConfig::default();
+        let paths = DownloadStoragePaths::for_target(&target, &config);
+        let mut spec = job(job_id("library")?)?;
+        spec.target_path = target;
+        spec.checksum = Some(Checksum {
+            algorithm: ChecksumAlgorithm::Sha256,
+            value: "abc123".to_string(),
+        });
+        let metadata = PartialDownloadMetadata::for_job(
+            &spec,
+            128,
+            Some(ResumeValidator {
+                etag: Some("\"etag\"".to_string()),
+                last_modified: Some("Fri, 26 Jun 2026 00:00:00 GMT".to_string()),
+            }),
+        );
+
+        paths.write_partial_metadata(&metadata, &config)?;
+        let read_back = paths.read_partial_metadata()?;
+
+        assert_eq!(read_back, metadata);
+        assert_eq!(
+            read_back.schema_version,
+            PARTIAL_DOWNLOAD_METADATA_SCHEMA_VERSION
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn partial_metadata_rejects_unknown_schema_version() -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let target = temp_dir.path().join("client.jar");
+        let config = DownloadStorageConfig::default();
+        let paths = DownloadStoragePaths::for_target(&target, &config);
+        paths.ensure_parent_dirs()?;
+        fs::write(
+            &paths.partial_metadata_path,
+            r#"{
+  "schema_version": 999,
+  "job_id": "client",
+  "url": "https://example.invalid/client.jar",
+  "target_path": "client.jar",
+  "expected_size": 4,
+  "checksum": null,
+  "downloaded": 2,
+  "validator": null
+}"#,
+        )?;
+
+        let result = paths.read_partial_metadata();
+
+        assert!(matches!(
+            result,
+            Err(DownloadStorageError::UnsupportedPartialMetadataVersion { version: 999, .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn storage_primitives_write_partial_metadata_and_promote()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let target = temp_dir.path().join("assets/objects/ab/file");
+        let config = DownloadStorageConfig {
+            atomic_rename: true,
+            ..DownloadStorageConfig::default()
+        };
+        let paths = DownloadStoragePaths::for_target(&target, &config);
+        let mut spec = job(job_id("asset")?)?;
+        spec.target_path = target.clone();
+        let metadata = PartialDownloadMetadata::for_job(&spec, 7, None);
+
+        paths.ensure_parent_dirs()?;
+        paths.write_partial_bytes(b"payload", &config)?;
+        paths.write_partial_metadata(&metadata, &config)?;
+        paths.promote_partial_to_target(&config)?;
+        paths.remove_partial_metadata_if_exists()?;
+
+        assert_eq!(fs::read(&target)?, b"payload");
+        assert!(!paths.partial_path.exists());
+        assert!(!paths.partial_metadata_path.exists());
+        Ok(())
+    }
+
+    #[test]
     fn artifact_verifier_accepts_matching_size_and_sha1() -> Result<(), Box<dyn std::error::Error>>
     {
         let temp_dir = tempfile::tempdir()?;
@@ -308,6 +404,103 @@ mod tests {
             result,
             Err(ArtifactVerifyError::ChecksumMismatch { path: mismatch_path, .. })
                 if mismatch_path == path
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn artifact_verifier_classifies_missing_target() -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let path = temp_dir.path().join("missing.bin");
+        let mut spec = job(job_id("missing")?)?;
+        spec.target_path = path.clone();
+        let verifier = ArtifactVerifier::new(DownloadIntegrityConfig::default());
+
+        let decision = verifier.classify_existing_job_target(&spec);
+
+        assert!(matches!(
+            decision,
+            ExistingArtifactDecision::Missing { path: missing_path } if missing_path == path
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn artifact_verifier_classifies_matching_target_as_ready()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let path = temp_dir.path().join("artifact.bin");
+        fs::write(&path, b"hello")?;
+        let mut spec = job(job_id("ready")?)?;
+        spec.target_path = path.clone();
+        spec.expected_size = Some(5);
+        let verifier = ArtifactVerifier::new(DownloadIntegrityConfig::default());
+
+        let decision = verifier.classify_existing_job_target(&spec);
+
+        assert!(matches!(
+            decision,
+            ExistingArtifactDecision::Ready(ArtifactVerification { path: ready_path, size: 5 })
+                if ready_path == path
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn artifact_verifier_allows_redownload_for_checksum_mismatch_when_configured()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let path = temp_dir.path().join("artifact.bin");
+        fs::write(&path, b"hello")?;
+        let mut spec = job(job_id("corrupt")?)?;
+        spec.target_path = path.clone();
+        spec.expected_size = Some(5);
+        spec.checksum = Some(Checksum {
+            algorithm: ChecksumAlgorithm::Sha1,
+            value: "not-the-sha1".to_string(),
+        });
+        let verifier = ArtifactVerifier::new(DownloadIntegrityConfig::default());
+
+        let decision = verifier.classify_existing_job_target(&spec);
+
+        assert!(matches!(
+            decision,
+            ExistingArtifactDecision::NeedsRedownload {
+                reason: ArtifactRedownloadReason::ChecksumMismatch {
+                    path: mismatch_path,
+                    algorithm: ChecksumAlgorithm::Sha1,
+                    ..
+                }
+            } if mismatch_path == path
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn artifact_verifier_fails_checksum_mismatch_when_redownload_is_disabled()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let path = temp_dir.path().join("artifact.bin");
+        fs::write(&path, b"hello")?;
+        let mut spec = job(job_id("corrupt")?)?;
+        spec.target_path = path;
+        spec.expected_size = Some(5);
+        spec.checksum = Some(Checksum {
+            algorithm: ChecksumAlgorithm::Sha256,
+            value: "not-the-sha256".to_string(),
+        });
+        let verifier = ArtifactVerifier::new(DownloadIntegrityConfig {
+            checksum_mismatch_redownload_once: false,
+            ..DownloadIntegrityConfig::default()
+        });
+
+        let decision = verifier.classify_existing_job_target(&spec);
+
+        assert!(matches!(
+            decision,
+            ExistingArtifactDecision::Failed {
+                error: ArtifactVerifyError::ChecksumMismatch { .. }
+            }
         ));
         Ok(())
     }

@@ -2,8 +2,10 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use crate::DownloadPlanError;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct DownloadJobId(String);
 
 impl DownloadJobId {
@@ -20,7 +22,8 @@ impl DownloadJobId {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct DownloadUrl(String);
 
 impl DownloadUrl {
@@ -54,7 +57,7 @@ impl DownloadPlan {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DownloadJobSpec {
     pub id: DownloadJobId,
     pub url: DownloadUrl,
@@ -66,19 +69,21 @@ pub struct DownloadJobSpec {
     pub policy: DownloadJobPolicy,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Checksum {
     pub algorithm: ChecksumAlgorithm,
     pub value: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ChecksumAlgorithm {
     Sha1,
     Sha256,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DownloadArtifactKind {
     VersionMetadata,
     ClientJar,
@@ -88,7 +93,7 @@ pub enum DownloadArtifactKind {
     JavaRuntime,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DownloadJobPolicy {
     pub resumable: bool,
     pub retryable: bool,

@@ -134,8 +134,21 @@ where
         config: DownloadManagerConfig,
         backend: B,
     ) -> Result<(Self, DownloadServiceHandle, DownloadEventStream), DownloadManagerError> {
-        let service = DownloadService::new(plan, config, backend)?;
+        Self::with_backend_factory(plan, config, |_| backend)
+    }
+
+    pub fn with_backend_factory<F>(
+        plan: DownloadPlan,
+        config: DownloadManagerConfig,
+        build_backend: F,
+    ) -> Result<(Self, DownloadServiceHandle, DownloadEventStream), DownloadManagerError>
+    where
+        F: FnOnce(DownloadServiceHandle) -> B,
+    {
         let (input_sender, input_receiver) = mpsc::channel();
+        let handle = DownloadServiceHandle { input_sender };
+        let backend = build_backend(handle.clone());
+        let service = DownloadService::new(plan, config, backend)?;
         let (event_sender, event_receiver) = mpsc::channel();
         let service_loop = Self {
             service,
@@ -143,7 +156,29 @@ where
             event_sender,
             started: false,
         };
+        let event_stream = DownloadEventStream { event_receiver };
+        Ok((service_loop, handle, event_stream))
+    }
+
+    pub fn try_with_backend_factory<F>(
+        plan: DownloadPlan,
+        config: DownloadManagerConfig,
+        build_backend: F,
+    ) -> Result<(Self, DownloadServiceHandle, DownloadEventStream), DownloadServiceError>
+    where
+        F: FnOnce(DownloadServiceHandle) -> Result<B, DownloadServiceError>,
+    {
+        let (input_sender, input_receiver) = mpsc::channel();
         let handle = DownloadServiceHandle { input_sender };
+        let backend = build_backend(handle.clone())?;
+        let service = DownloadService::new(plan, config, backend)?;
+        let (event_sender, event_receiver) = mpsc::channel();
+        let service_loop = Self {
+            service,
+            input_receiver,
+            event_sender,
+            started: false,
+        };
         let event_stream = DownloadEventStream { event_receiver };
         Ok((service_loop, handle, event_stream))
     }

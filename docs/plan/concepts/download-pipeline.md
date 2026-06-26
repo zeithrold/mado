@@ -56,7 +56,7 @@ The first Rust backend slice should make the service boundary explicit before it
 
 `DownloadBackend` is an execution boundary, not a source of truth. A backend starts jobs and stops workers in response to manager actions. Workers report back with `WorkerReport`; they do not mutate shared job state, decide plan completion, or publish UI events directly.
 
-The native Rust HTTP backend may use Tokio internally, but Tokio types should not appear in core plan, command, event, state, verifier, storage, or service APIs. GPUI owns the UI task model and should observe Mado's typed events rather than drive download workers directly. Tests for the manager, verifier, storage helpers, and service dispatch should stay network-free and runtime-free; backend tests can use a local HTTP fixture once HTTP behavior is introduced.
+The native Rust HTTP backend may use Tokio internally, but Tokio types should not appear in core plan, command, event, state, verifier, storage, or service APIs. Runtime ownership belongs to the application or integration layer, which passes a `tokio::runtime::Handle` into the backend. GPUI owns the UI task model and should observe Mado's typed events rather than drive download workers directly. Tests for the manager, verifier, storage helpers, and service dispatch should stay network-free and runtime-free; backend tests can use a local HTTP fixture once HTTP behavior is introduced.
 
 The first backend-supporting primitives are:
 
@@ -67,6 +67,67 @@ The first backend-supporting primitives are:
 - `DownloadService` for manager/backend orchestration.
 
 This keeps Mado's downloader model stable if the native backend implementation changes, and it leaves room for a future optional aria2 backend without changing planner, command, event, state, or UI integration contracts.
+
+Before real HTTP I/O is introduced, the Rust boundary includes a runtime-free typed service loop:
+
+- `DownloadServiceInput` carries either a user `DownloadCommand` or a worker `WorkerReport`.
+- `DownloadServiceHandle` is the typed sending side used by UI/runtime integration and future workers.
+- `DownloadEventStream` is the typed receiving side observed by UI/runtime integration.
+- `DownloadServiceLoop` owns the `DownloadService`, consumes service inputs in mailbox order, schedules ready work, dispatches backend actions, and publishes manager events.
+
+This loop deliberately uses standard-library channels in the core crate. The Tokio HTTP backend bridges externally-spawned internal tasks to `DownloadServiceHandle`, but Tokio channel types should remain inside that backend or the application integration layer.
+
+## HTTP Backend Preconditions
+
+The native HTTP backend should be added only after the synchronous primitives below are stable. They are part of Mado's downloader contract rather than incidental HTTP implementation details.
+
+Partial metadata is stored as `.part.json` beside the partial file. The format is versioned with `schema_version`. Version `1` contains the job id, URL, target path, optional expected size, optional checksum, downloaded byte count, and optional resume validators (`ETag` and `Last-Modified`). Unknown schema versions must not be resumed blindly; callers should treat them as incompatible metadata and restart the transfer according to retention policy.
+
+Storage helpers prepare deterministic file paths and perform local filesystem operations:
+
+- create parent directories for target, partial, and partial metadata paths;
+- write partial bytes to the configured partial path;
+- write and read versioned partial metadata;
+- remove stale partial metadata when it has served its purpose;
+- promote the partial file to the target path, using atomic rename when configured;
+- optionally fsync completed files and their parent directory when configured.
+
+`ArtifactVerifier` classifies an existing target before scheduling HTTP work:
+
+- `Ready` means the target exists and passes size/checksum validation.
+- `Missing` means the target does not exist and must be downloaded.
+- `NeedsRedownload` means the target exists but is incomplete or corrupt in a way the configured policy permits replacing, such as a size mismatch or a checksum mismatch with one bounded redownload attempt enabled.
+- `Failed` means verification failed for a reason the downloader should not silently repair.
+
+Checksum mismatch remains a hard integrity failure. The policy may allow one bounded redownload attempt, but the mismatched file must not be promoted or considered ready.
+
+## Native HTTP Backend
+
+`NativeHttpBackend` is Mado's first-party Rust HTTP execution backend. It implements `DownloadBackend` and uses Tokio plus Reqwest internally, but async task, client, request, and response types remain private to the backend module. It does not create or own a Tokio runtime; callers provide a runtime handle from the application or integration layer.
+
+The backend is wired through `DownloadServiceLoop::try_with_backend_factory` so setup failures, such as HTTP client construction failures, return typed backend errors before any job is scheduled. Once running, the backend responds only to manager actions:
+
+- `StartJob` spawns one cooperative worker task for that job.
+- `StopWorker` sends a cooperative stop reason to that worker.
+
+Workers report back through `DownloadServiceHandle` using `WorkerReport`; they do not emit `DownloadEvent` directly and they do not mutate manager state.
+
+The first native backend behavior is intentionally narrow:
+
+- classify an existing target with `ArtifactVerifier` before starting HTTP;
+- immediately report completion when the target is already ready;
+- write HTTP response bytes to `.part`;
+- write versioned `.part.json` metadata during transfer;
+- report typed progress;
+- support HTTP `Range` resume when compatible partial metadata and validators exist;
+- verify the partial file before promotion;
+- atomically promote `.part` to the target path when configured;
+- verify the promoted target and remove stale partial metadata;
+- classify HTTP/server/IO failures as retryable or permanent worker failures.
+
+Stop handling is cooperative. Pause and cancel do not update job state directly inside the backend; the worker reports `Stopped(Paused)` or `Stopped(Cancelled)`, and the manager performs the state transition. Partial retention follows `DownloadResumeConfig`.
+
+Native HTTP tests should prefer local fixtures. The initial integration coverage uses a loopback HTTP fixture for fresh download and promotion, existing-target fast completion, and Range resume. Real Minecraft URLs remain outside the local unit and integration gate.
 
 ## Concurrency And Commands
 
@@ -115,4 +176,4 @@ Checksum mismatch is a hard integrity failure. It may trigger one bounded redown
 
 ## First Implementation Slice
 
-Start with a pure download planner that emits required artifact records from resolved metadata fixtures. Add executor tests around checksum validation using local test files before adding real HTTP behavior.
+Start with a pure download planner that emits required artifact records from resolved metadata fixtures. Add manager, service-loop, storage, and verifier tests around local files before adding real HTTP behavior. Real HTTP should then enter behind `DownloadBackend`, using local HTTP fixtures first and preserving the existing command, report, event, storage, and verification contracts.
