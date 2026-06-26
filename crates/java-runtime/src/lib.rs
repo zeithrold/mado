@@ -1,173 +1,25 @@
-use std::collections::BTreeMap;
-use std::fmt;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+mod architecture;
+mod detect;
+mod error;
+mod metadata;
+mod probe;
+mod runtime;
+mod vendor;
+mod version;
 
-use thiserror::Error;
-
-const MAX_RELEASE_FILE_BYTES: u64 = 64 * 1024;
-const MAX_METADATA_VALUE_BYTES: usize = 512;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct JavaRuntimeInfo {
-    pub java_home: PathBuf,
-    pub java_executable: PathBuf,
-    pub version: JavaVersion,
-    pub vendor: JavaVendor,
-    pub architecture: JavaArchitecture,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct JavaVersion {
-    pub raw: String,
-    pub major: u16,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct JavaVendor {
-    pub raw: String,
-    pub kind: JavaVendorKind,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum JavaVendorKind {
-    Temurin,
-    Zulu,
-    Liberica,
-    Oracle,
-    OpenJdk,
-    Microsoft,
-    Corretto,
-    Unknown,
-}
-
-impl fmt::Display for JavaVendorKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Temurin => f.write_str("temurin"),
-            Self::Zulu => f.write_str("zulu"),
-            Self::Liberica => f.write_str("liberica"),
-            Self::Oracle => f.write_str("oracle"),
-            Self::OpenJdk => f.write_str("openjdk"),
-            Self::Microsoft => f.write_str("microsoft"),
-            Self::Corretto => f.write_str("corretto"),
-            Self::Unknown => f.write_str("unknown"),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct JavaArchitecture {
-    pub raw: String,
-    pub kind: JavaArchitectureKind,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum JavaArchitectureKind {
-    X86_64,
-    Aarch64,
-    X86,
-    Arm,
-    Unknown,
-}
-
-impl fmt::Display for JavaArchitectureKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::X86_64 => f.write_str("x86_64"),
-            Self::Aarch64 => f.write_str("aarch64"),
-            Self::X86 => f.write_str("x86"),
-            Self::Arm => f.write_str("arm"),
-            Self::Unknown => f.write_str("unknown"),
-        }
-    }
-}
-
-#[derive(Debug, Error)]
-pub enum JavaRuntimeError {
-    #[error("Java home does not exist: {path}")]
-    HomeMissing { path: PathBuf },
-    #[error("Java executable does not exist: {path}")]
-    ExecutableMissing { path: PathBuf },
-    #[error("Java executable path has no parent: {path}")]
-    ExecutableWithoutParent { path: PathBuf },
-    #[error("failed to read Java release file at {path}: {source}")]
-    ReadRelease {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
-    #[error("Java release file is too large at {path}: {size} bytes exceeds {max_size} bytes")]
-    ReleaseFileTooLarge {
-        path: PathBuf,
-        size: u64,
-        max_size: u64,
-    },
-    #[error("Java metadata is missing required field: {field}")]
-    MissingMetadata { field: &'static str },
-    #[error("Java metadata field is too large: {field} exceeds {max_bytes} bytes")]
-    MetadataValueTooLarge {
-        field: &'static str,
-        max_bytes: usize,
-    },
-    #[error("Java metadata field contains a control character: {field}")]
-    MetadataValueContainsControl { field: &'static str },
-    #[error("Java version is invalid: {raw}")]
-    InvalidVersion { raw: String },
-    #[error("failed to run Java probe command {executable}: {source}")]
-    ProbeStart {
-        executable: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
-    #[error("Java probe command failed for {executable} with status {status}: {stderr}")]
-    ProbeFailed {
-        executable: PathBuf,
-        status: String,
-        stderr: String,
-    },
-}
-
-pub fn detect_java_home(path: impl AsRef<Path>) -> Result<JavaRuntimeInfo, JavaRuntimeError> {
-    let java_home = path.as_ref();
-    if !java_home.exists() {
-        return Err(JavaRuntimeError::HomeMissing {
-            path: java_home.to_path_buf(),
-        });
-    }
-
-    let java_executable = java_executable_for_home(java_home);
-    detect_resolved_runtime(java_home.to_path_buf(), java_executable)
-}
-
-pub fn detect_java_executable(path: impl AsRef<Path>) -> Result<JavaRuntimeInfo, JavaRuntimeError> {
-    let java_executable = path.as_ref();
-    if !java_executable.exists() {
-        return Err(JavaRuntimeError::ExecutableMissing {
-            path: java_executable.to_path_buf(),
-        });
-    }
-
-    let bin_dir =
-        java_executable
-            .parent()
-            .ok_or_else(|| JavaRuntimeError::ExecutableWithoutParent {
-                path: java_executable.to_path_buf(),
-            })?;
-    let java_home = bin_dir
-        .parent()
-        .ok_or_else(|| JavaRuntimeError::ExecutableWithoutParent {
-            path: java_executable.to_path_buf(),
-        })?;
-
-    detect_resolved_runtime(java_home.to_path_buf(), java_executable.to_path_buf())
-}
+pub use architecture::{JavaArchitecture, JavaArchitectureKind};
+pub use detect::{detect_java_executable, detect_java_home};
+pub use error::JavaRuntimeError;
+pub use runtime::JavaRuntimeInfo;
+pub use vendor::{JavaVendor, JavaVendorKind};
+pub use version::JavaVersion;
 
 #[cfg(fuzzing)]
 pub mod fuzzing {
-    use super::{
-        JavaArchitecture, JavaArchitectureKind, JavaMetadata, JavaRuntimeError, JavaVendor,
-        JavaVendorKind, JavaVersion,
+    use crate::{
+        JavaArchitecture, JavaArchitectureKind, JavaRuntimeError, JavaVendor, JavaVendorKind,
+        JavaVersion,
+        metadata::{JavaMetadata, MAX_METADATA_VALUE_BYTES},
     };
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -201,7 +53,7 @@ pub mod fuzzing {
     }
 
     pub const fn max_metadata_value_bytes() -> usize {
-        super::MAX_METADATA_VALUE_BYTES
+        MAX_METADATA_VALUE_BYTES
     }
 
     impl From<JavaMetadata> for ParsedJavaMetadata {
@@ -215,297 +67,18 @@ pub mod fuzzing {
     }
 }
 
-fn detect_resolved_runtime(
-    java_home: PathBuf,
-    java_executable: PathBuf,
-) -> Result<JavaRuntimeInfo, JavaRuntimeError> {
-    detect_resolved_runtime_with_probe(java_home, java_executable, &CommandJavaProbe)
-}
-
-fn detect_resolved_runtime_with_probe(
-    java_home: PathBuf,
-    java_executable: PathBuf,
-    probe: &impl JavaProbe,
-) -> Result<JavaRuntimeInfo, JavaRuntimeError> {
-    if !java_executable.exists() {
-        return Err(JavaRuntimeError::ExecutableMissing {
-            path: java_executable,
-        });
-    }
-
-    let release_path = java_home.join("release");
-    let metadata = if release_path.exists() {
-        let size = std::fs::metadata(&release_path)
-            .map_err(|source| JavaRuntimeError::ReadRelease {
-                path: release_path.clone(),
-                source,
-            })?
-            .len();
-        if size > MAX_RELEASE_FILE_BYTES {
-            return Err(JavaRuntimeError::ReleaseFileTooLarge {
-                path: release_path,
-                size,
-                max_size: MAX_RELEASE_FILE_BYTES,
-            });
-        }
-
-        let content = std::fs::read_to_string(&release_path).map_err(|source| {
-            JavaRuntimeError::ReadRelease {
-                path: release_path,
-                source,
-            }
-        })?;
-        match JavaMetadata::from_release_file(&content) {
-            Ok(metadata) => metadata,
-            Err(_) => JavaMetadata::from_probe_with(&java_executable, probe)?,
-        }
-    } else {
-        JavaMetadata::from_probe_with(&java_executable, probe)?
-    };
-
-    Ok(JavaRuntimeInfo {
-        java_home,
-        java_executable,
-        version: JavaVersion::parse(&metadata.version)?,
-        vendor: JavaVendor::from_raw(metadata.vendor),
-        architecture: JavaArchitecture::from_raw(metadata.architecture),
-    })
-}
-
-fn java_executable_for_home(java_home: &Path) -> PathBuf {
-    let binary = if cfg!(windows) { "java.exe" } else { "java" };
-    java_home.join("bin").join(binary)
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct JavaProbeOutput {
-    stdout: String,
-    stderr: String,
-}
-
-trait JavaProbe {
-    fn run(&self, java_executable: &Path) -> Result<JavaProbeOutput, JavaRuntimeError>;
-}
-
-struct CommandJavaProbe;
-
-impl JavaProbe for CommandJavaProbe {
-    fn run(&self, java_executable: &Path) -> Result<JavaProbeOutput, JavaRuntimeError> {
-        let output = Command::new(java_executable)
-            .args(["-XshowSettings:properties", "-version"])
-            .output()
-            .map_err(|source| JavaRuntimeError::ProbeStart {
-                executable: java_executable.to_path_buf(),
-                source,
-            })?;
-
-        if !output.status.success() {
-            return Err(JavaRuntimeError::ProbeFailed {
-                executable: java_executable.to_path_buf(),
-                status: output.status.to_string(),
-                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-            });
-        }
-
-        Ok(JavaProbeOutput {
-            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-        })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct JavaMetadata {
-    version: String,
-    vendor: String,
-    architecture: String,
-}
-
-impl JavaMetadata {
-    fn from_release_file(content: &str) -> Result<Self, JavaRuntimeError> {
-        let values = parse_key_value_lines(content);
-        let version = required_value(&values, "JAVA_VERSION")?;
-        let vendor = match optional_value(&values, "IMPLEMENTOR")? {
-            Some(vendor) => vendor,
-            None => {
-                optional_value(&values, "JAVA_VENDOR")?.unwrap_or_else(|| "Unknown".to_string())
-            }
-        };
-        let architecture = match optional_value(&values, "OS_ARCH")? {
-            Some(architecture) => architecture,
-            None => {
-                optional_value(&values, "SUN_ARCH_ABI")?.unwrap_or_else(|| "unknown".to_string())
-            }
-        };
-
-        Ok(Self {
-            version,
-            vendor,
-            architecture,
-        })
-    }
-
-    fn from_probe_with(
-        java_executable: &Path,
-        probe: &impl JavaProbe,
-    ) -> Result<Self, JavaRuntimeError> {
-        let output = probe.run(java_executable)?;
-
-        Self::from_probe_output(&output.stdout, &output.stderr)
-    }
-
-    fn from_probe_output(stdout: &str, stderr: &str) -> Result<Self, JavaRuntimeError> {
-        let combined = format!("{stdout}\n{stderr}");
-        let values = parse_probe_properties(&combined);
-
-        Ok(Self {
-            version: required_value(&values, "java.version")?,
-            vendor: optional_value(&values, "java.vendor")?
-                .unwrap_or_else(|| "Unknown".to_string()),
-            architecture: optional_value(&values, "os.arch")?
-                .unwrap_or_else(|| "unknown".to_string()),
-        })
-    }
-}
-
-impl JavaVersion {
-    fn parse(raw: &str) -> Result<Self, JavaRuntimeError> {
-        let raw = raw.trim().trim_matches('"').to_string();
-        let raw = validate_metadata_value("version", raw)?;
-
-        let major_text = raw.strip_prefix("1.").map_or_else(
-            || raw.split(['.', '_', '-']).next(),
-            |rest| rest.split(['.', '_', '-']).next(),
-        );
-
-        let major = major_text
-            .filter(|part| !part.is_empty())
-            .and_then(|part| part.parse::<u16>().ok())
-            .ok_or_else(|| JavaRuntimeError::InvalidVersion { raw: raw.clone() })?;
-
-        Ok(Self { raw, major })
-    }
-}
-
-impl JavaVendor {
-    fn from_raw(raw: String) -> Self {
-        let normalized = raw.to_ascii_lowercase();
-        let kind = if normalized.contains("temurin")
-            || normalized.contains("adoptium")
-            || normalized.contains("eclipse foundation")
-        {
-            JavaVendorKind::Temurin
-        } else if normalized.contains("zulu") || normalized.contains("azul") {
-            JavaVendorKind::Zulu
-        } else if normalized.contains("liberica") || normalized.contains("bellsoft") {
-            JavaVendorKind::Liberica
-        } else if normalized.contains("oracle") {
-            JavaVendorKind::Oracle
-        } else if normalized.contains("microsoft") {
-            JavaVendorKind::Microsoft
-        } else if normalized.contains("corretto") || normalized.contains("amazon") {
-            JavaVendorKind::Corretto
-        } else if normalized.contains("openjdk") {
-            JavaVendorKind::OpenJdk
-        } else {
-            JavaVendorKind::Unknown
-        };
-
-        Self { raw, kind }
-    }
-}
-
-impl JavaArchitecture {
-    fn from_raw(raw: String) -> Self {
-        let normalized = raw.to_ascii_lowercase();
-        let kind = match normalized.as_str() {
-            "x86_64" | "amd64" => JavaArchitectureKind::X86_64,
-            "aarch64" | "arm64" => JavaArchitectureKind::Aarch64,
-            "x86" | "i386" | "i486" | "i586" | "i686" => JavaArchitectureKind::X86,
-            "arm" | "arm32" => JavaArchitectureKind::Arm,
-            _ => JavaArchitectureKind::Unknown,
-        };
-
-        Self { raw, kind }
-    }
-}
-
-fn parse_key_value_lines(content: &str) -> BTreeMap<String, String> {
-    content
-        .lines()
-        .filter_map(|line| {
-            let trimmed = line.trim();
-            if trimmed.is_empty() || trimmed.starts_with('#') {
-                return None;
-            }
-
-            let (key, value) = trimmed.split_once('=')?;
-            Some((key.trim().to_string(), unquote(value.trim())))
-        })
-        .collect()
-}
-
-fn parse_probe_properties(content: &str) -> BTreeMap<String, String> {
-    content
-        .lines()
-        .filter_map(|line| {
-            let trimmed = line.trim();
-            let (key, value) = trimmed.split_once('=')?;
-            Some((key.trim().to_string(), value.trim().to_string()))
-        })
-        .collect()
-}
-
-fn required_value(
-    values: &BTreeMap<String, String>,
-    key: &'static str,
-) -> Result<String, JavaRuntimeError> {
-    let value = values
-        .get(key)
-        .filter(|value| !value.trim().is_empty())
-        .cloned()
-        .ok_or(JavaRuntimeError::MissingMetadata { field: key })?;
-    validate_metadata_value(key, value)
-}
-
-fn optional_value(
-    values: &BTreeMap<String, String>,
-    key: &'static str,
-) -> Result<Option<String>, JavaRuntimeError> {
-    let Some(value) = values
-        .get(key)
-        .filter(|value| !value.trim().is_empty())
-        .cloned()
-    else {
-        return Ok(None);
-    };
-
-    validate_metadata_value(key, value).map(Some)
-}
-
-fn validate_metadata_value(key: &'static str, value: String) -> Result<String, JavaRuntimeError> {
-    if value.len() > MAX_METADATA_VALUE_BYTES {
-        return Err(JavaRuntimeError::MetadataValueTooLarge {
-            field: key,
-            max_bytes: MAX_METADATA_VALUE_BYTES,
-        });
-    }
-
-    if value.chars().any(char::is_control) {
-        return Err(JavaRuntimeError::MetadataValueContainsControl { field: key });
-    }
-
-    Ok(value)
-}
-
-fn unquote(value: &str) -> String {
-    value.trim_matches('"').to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        detect::{
+            detect_resolved_runtime_with_probe, java_executable_for_home, max_release_file_bytes,
+        },
+        metadata::{JavaMetadata, MAX_METADATA_VALUE_BYTES, parse_key_value_lines},
+        probe::{JavaProbe, JavaProbeOutput},
+    };
     use std::fs;
+    use std::path::{Path, PathBuf};
 
     use tempfile::TempDir;
 
@@ -809,7 +382,7 @@ IMPLEMENTOR=Eclipse Adoptium
     fn reports_release_file_too_large() -> Result<(), Box<dyn std::error::Error>> {
         let temp = TempDir::new()?;
         let java_home = temp.path();
-        let oversized_len = usize::try_from(MAX_RELEASE_FILE_BYTES + 1)?;
+        let oversized_len = usize::try_from(max_release_file_bytes() + 1)?;
         fs::create_dir(java_home.join("bin"))?;
         fs::write(java_home.join("bin").join("java"), "")?;
         fs::write(java_home.join("release"), "A".repeat(oversized_len))?;
@@ -818,7 +391,7 @@ IMPLEMENTOR=Eclipse Adoptium
             JavaRuntimeError::ReleaseFileTooLarge {
                 path: PathBuf::new(),
                 size: 0,
-                max_size: MAX_RELEASE_FILE_BYTES,
+                max_size: max_release_file_bytes(),
             }
         });
 

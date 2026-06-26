@@ -46,6 +46,28 @@ The manager should use an actor-style control plane: workers report progress, co
 
 The first implementation should keep the control plane independent from HTTP I/O. This allows the state machine, command handling, retry scheduling, and event emission to be tested without network access. Native Rust downloading should be the default backend; aria2 may be considered later as an optional backend behind Mado's own plan, command, event, and state model.
 
+## Rust Backend Boundary
+
+The first Rust backend slice should make the service boundary explicit before it performs real HTTP I/O.
+
+`DownloadManagerState` remains a synchronous, deterministic state machine. It owns the job table, validates terminal transitions, schedules ready jobs, and converts commands or worker reports into `DownloadManagerAction` values. It does not spawn tasks, open sockets, read files, or depend on an async runtime.
+
+`DownloadService` is the orchestration layer above the manager. It accepts user commands and worker reports, applies manager actions to a `DownloadBackend`, and immediately asks the manager to schedule any newly-ready work. This layer is where an application or runtime integration can later connect command channels, worker report channels, and typed event delivery.
+
+`DownloadBackend` is an execution boundary, not a source of truth. A backend starts jobs and stops workers in response to manager actions. Workers report back with `WorkerReport`; they do not mutate shared job state, decide plan completion, or publish UI events directly.
+
+The native Rust HTTP backend may use Tokio internally, but Tokio types should not appear in core plan, command, event, state, verifier, storage, or service APIs. GPUI owns the UI task model and should observe Mado's typed events rather than drive download workers directly. Tests for the manager, verifier, storage helpers, and service dispatch should stay network-free and runtime-free; backend tests can use a local HTTP fixture once HTTP behavior is introduced.
+
+The first backend-supporting primitives are:
+
+- `DownloadStoragePaths` for deterministic target, partial, and partial metadata paths.
+- `PartialDownloadMetadata` and `ResumeValidator` for future `.part.json` resume records.
+- `ArtifactVerifier` for size and checksum validation before a file is considered ready.
+- `DownloadBackend` for start/stop execution commands.
+- `DownloadService` for manager/backend orchestration.
+
+This keeps Mado's downloader model stable if the native backend implementation changes, and it leaves room for a future optional aria2 backend without changing planner, command, event, state, or UI integration contracts.
+
 ## Concurrency And Commands
 
 Concurrency must be bounded. `DownloadManagerConfig` should include global and per-host limits plus queue capacity. High throughput comes from controlled parallelism, not unbounded task spawning.
