@@ -5,7 +5,8 @@ mod title_bar;
 
 #[cfg(not(coverage))]
 use gpui::{
-    App, Application, Bounds, TitlebarOptions, WindowBounds, WindowOptions, actions, px, size,
+    App, AppContext, Application, Bounds, TitlebarOptions, WindowBounds, WindowOptions, actions,
+    px, size,
 };
 #[cfg(all(target_os = "macos", not(coverage)))]
 use gpui::{Context, Render, Window, div, prelude::*, rgb};
