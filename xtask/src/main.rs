@@ -268,7 +268,7 @@ fn run_mutants(output_dir: &Path) -> Result<i32, String> {
             "--output",
         ])
         .arg(output_dir)
-        .args(["--", "--lib", "--bins"])
+        .args(["--", "--lib"])
         .env("LUCIDE_STATIC_CACHE_DIR", cache_dir);
 
     match command_status(command, "running cargo mutants")? {
