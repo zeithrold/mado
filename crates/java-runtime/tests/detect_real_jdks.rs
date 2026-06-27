@@ -7,6 +7,8 @@ use mado_java_runtime::{JavaArchitectureKind, JavaRuntimeInfo, JavaVendorKind, d
 use serde_json::Value;
 use tar::Archive;
 
+const REAL_INTEGRATION_ENV: &str = "MADO_RUN_REAL_INTEGRATION";
+
 #[derive(Debug, Clone, Copy)]
 enum FixtureVendor {
     Temurin,
@@ -21,6 +23,7 @@ struct JdkFixture {
 }
 
 #[test]
+#[ignore = "requires downloading representative real JDK fixtures"]
 fn detects_representative_real_jdks() -> Result<(), Box<dyn std::error::Error>> {
     if !should_run_real_jdk_fixture_tests() {
         write_integration_skip_message()?;
@@ -266,14 +269,13 @@ fn workspace_root() -> PathBuf {
 }
 
 fn should_run_real_jdk_fixture_tests() -> bool {
-    std::env::var_os("CI").is_some()
-        || std::env::var("MADO_RUN_JDK_FIXTURES").is_ok_and(|value| value == "1")
+    std::env::var(REAL_INTEGRATION_ENV).is_ok_and(|value| value == "1")
 }
 
 fn write_integration_skip_message() -> Result<(), Box<dyn std::error::Error>> {
     writeln!(
         std::io::stderr(),
-        "skipping real JDK fixture downloads outside CI; set MADO_RUN_JDK_FIXTURES=1 to run locally"
+        "skipping real JDK fixture downloads; set {REAL_INTEGRATION_ENV}=1 and run ignored tests"
     )?;
     Ok(())
 }

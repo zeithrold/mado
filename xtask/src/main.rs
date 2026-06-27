@@ -13,6 +13,10 @@ const DEFAULT_NIGHTLY_FUZZ_SECONDS: u32 = 300;
 const ICON_NAME_CORPUS: &str = "fuzz/corpus/icon_name";
 const JAVA_RUNTIME_METADATA_CORPUS: &str = "fuzz/corpus/java_runtime_metadata";
 const JAVA_RUNTIME_METADATA_SEEDS: &str = "fuzz/seeds/java_runtime_metadata";
+const DOWNLOAD_MANAGER_STATE_CORPUS: &str = "fuzz/corpus/download_manager_state";
+const DOWNLOAD_PARTIAL_METADATA_CORPUS: &str = "fuzz/corpus/download_partial_metadata";
+const DOWNLOAD_PARTIAL_METADATA_SEEDS: &str = "fuzz/seeds/download_partial_metadata";
+const DOWNLOAD_RESUME_DECISION_CORPUS: &str = "fuzz/corpus/download_resume_decision";
 
 fn main() -> ExitCode {
     match run_from(env::args_os()) {
@@ -98,10 +102,19 @@ enum FuzzCommand {
 enum FuzzTarget {
     IconName,
     JavaRuntimeMetadata,
+    DownloadManagerState,
+    DownloadPartialMetadata,
+    DownloadResumeDecision,
 }
 
 impl FuzzTarget {
-    const ALL: &'static [Self] = &[Self::IconName, Self::JavaRuntimeMetadata];
+    const ALL: &'static [Self] = &[
+        Self::IconName,
+        Self::JavaRuntimeMetadata,
+        Self::DownloadManagerState,
+        Self::DownloadPartialMetadata,
+        Self::DownloadResumeDecision,
+    ];
 
     const fn config(self) -> FuzzTargetConfig {
         match self {
@@ -114,6 +127,21 @@ impl FuzzTarget {
                 cargo_name: "java_runtime_metadata",
                 corpus_dir: JAVA_RUNTIME_METADATA_CORPUS,
                 seed_dir: Some(JAVA_RUNTIME_METADATA_SEEDS),
+            },
+            Self::DownloadManagerState => FuzzTargetConfig {
+                cargo_name: "download_manager_state",
+                corpus_dir: DOWNLOAD_MANAGER_STATE_CORPUS,
+                seed_dir: None,
+            },
+            Self::DownloadPartialMetadata => FuzzTargetConfig {
+                cargo_name: "download_partial_metadata",
+                corpus_dir: DOWNLOAD_PARTIAL_METADATA_CORPUS,
+                seed_dir: Some(DOWNLOAD_PARTIAL_METADATA_SEEDS),
+            },
+            Self::DownloadResumeDecision => FuzzTargetConfig {
+                cargo_name: "download_resume_decision",
+                corpus_dir: DOWNLOAD_RESUME_DECISION_CORPUS,
+                seed_dir: None,
             },
         }
     }
@@ -132,7 +160,11 @@ impl FuzzTarget {
 
     const fn smoke_args(self) -> &'static [&'static str] {
         match self {
-            Self::IconName | Self::JavaRuntimeMetadata => &["-runs=256"],
+            Self::IconName
+            | Self::JavaRuntimeMetadata
+            | Self::DownloadManagerState
+            | Self::DownloadPartialMetadata
+            | Self::DownloadResumeDecision => &["-runs=256"],
         }
     }
 
@@ -140,12 +172,19 @@ impl FuzzTarget {
         match self {
             Self::IconName => &[],
             Self::JavaRuntimeMetadata => &["-max_len=131072"],
+            Self::DownloadManagerState => &["-max_len=4096"],
+            Self::DownloadPartialMetadata => &["-max_len=65536"],
+            Self::DownloadResumeDecision => &["-max_len=65536"],
         }
     }
 
     const fn nightly_seconds(self) -> u32 {
         match self {
-            Self::IconName | Self::JavaRuntimeMetadata => DEFAULT_NIGHTLY_FUZZ_SECONDS,
+            Self::IconName
+            | Self::JavaRuntimeMetadata
+            | Self::DownloadManagerState
+            | Self::DownloadPartialMetadata
+            | Self::DownloadResumeDecision => DEFAULT_NIGHTLY_FUZZ_SECONDS,
         }
     }
 }
@@ -533,6 +572,14 @@ mod tests {
     }
 
     #[test]
+    fn download_partial_metadata_declares_curated_seed_directory() {
+        assert_eq!(
+            FuzzTarget::DownloadPartialMetadata.seed_dir(),
+            Some(DOWNLOAD_PARTIAL_METADATA_SEEDS)
+        );
+    }
+
+    #[test]
     fn prepares_missing_generated_corpus_directory() {
         let workspace = temp_workspace("icon-name-corpus");
 
@@ -610,6 +657,75 @@ mod tests {
                 command: FuzzCommand::Run {
                     target: FuzzTarget::JavaRuntimeMetadata,
                     seconds: Some(300),
+                }
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_fuzz_run_download_manager_state() {
+        let cli = Cli::try_parse_from([
+            "xtask",
+            "fuzz",
+            "run",
+            "download-manager-state",
+            "--seconds",
+            "30",
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            cli.command,
+            CommandKind::Fuzz {
+                command: FuzzCommand::Run {
+                    target: FuzzTarget::DownloadManagerState,
+                    seconds: Some(30),
+                }
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_fuzz_run_download_partial_metadata() {
+        let cli = Cli::try_parse_from([
+            "xtask",
+            "fuzz",
+            "run",
+            "download-partial-metadata",
+            "--seconds",
+            "30",
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            cli.command,
+            CommandKind::Fuzz {
+                command: FuzzCommand::Run {
+                    target: FuzzTarget::DownloadPartialMetadata,
+                    seconds: Some(30),
+                }
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_fuzz_run_download_resume_decision() {
+        let cli = Cli::try_parse_from([
+            "xtask",
+            "fuzz",
+            "run",
+            "download-resume-decision",
+            "--seconds",
+            "30",
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            cli.command,
+            CommandKind::Fuzz {
+                command: FuzzCommand::Run {
+                    target: FuzzTarget::DownloadResumeDecision,
+                    seconds: Some(30),
                 }
             }
         ));

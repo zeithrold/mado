@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "job_id": "client",
+  "url": "https://example.test/client.jar",
+  "target_path": "versions/client.jar",
+  "expected_size": 19,
+  "checksum": {
+    "algorithm": "sha256",
+    "value": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  },
+  "downloaded": 9,
+  "validator": {
+    "etag": "\"client\"",
+    "last_modified": "Fri, 26 Jun 2026 00:00:00 GMT"
+  }
+}

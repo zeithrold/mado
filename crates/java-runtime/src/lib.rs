@@ -403,6 +403,24 @@ IMPLEMENTOR=Eclipse Adoptium
     }
 
     #[test]
+    fn accepts_release_file_at_max_size() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = TempDir::new()?;
+        let java_home = temp.path();
+        let max_len = usize::try_from(max_release_file_bytes())?;
+        let release_content = release_file_padded_to_len(max_len);
+        fs::create_dir(java_home.join("bin"))?;
+        fs::write(java_home.join("bin").join("java"), "")?;
+        fs::write(java_home.join("release"), release_content)?;
+
+        let info = detect_java_home(java_home)?;
+
+        assert_eq!(info.version.major, 21);
+        assert_eq!(info.vendor.kind, JavaVendorKind::Temurin);
+        assert_eq!(info.architecture.kind, JavaArchitectureKind::Aarch64);
+        Ok(())
+    }
+
+    #[test]
     fn reports_required_metadata_value_too_large() {
         let content = format!(
             "JAVA_VERSION=\"{}\"",
@@ -422,6 +440,17 @@ IMPLEMENTOR=Eclipse Adoptium
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn accepts_metadata_value_at_max_size() -> Result<(), Box<dyn std::error::Error>> {
+        let vendor = "A".repeat(MAX_METADATA_VALUE_BYTES);
+        let metadata = JavaMetadata::from_release_file(&format!(
+            "JAVA_VERSION=\"21.0.5\"\nIMPLEMENTOR=\"{vendor}\""
+        ))?;
+
+        assert_eq!(metadata.vendor, vendor);
+        Ok(())
     }
 
     #[test]
@@ -572,6 +601,17 @@ IMPLEMENTOR=Eclipse Adoptium
             });
 
         assert!(matches!(error, JavaRuntimeError::ExecutableMissing { .. }));
+    }
+
+    fn release_file_padded_to_len(len: usize) -> String {
+        let mut content = r#"JAVA_VERSION="21.0.5"
+IMPLEMENTOR="Eclipse Adoptium"
+OS_ARCH="aarch64"
+"#
+        .to_string();
+        assert!(content.len() <= len);
+        content.push_str(&"#".repeat(len - content.len()));
+        content
     }
 
     mod fake_probe {

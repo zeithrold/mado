@@ -18,6 +18,9 @@ test-unit:
 test-integration:
     cargo test --workspace --tests
 
+test-real-integration:
+    MADO_RUN_REAL_INTEGRATION=1 cargo test --workspace --tests -- --ignored
+
 test-all: test-unit test-integration
 
 deny:

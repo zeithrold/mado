@@ -9,7 +9,9 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
+mado-download = { path = "../crates/download" }
 mado-java-runtime = { path = "../crates/java-runtime" }
+serde_json = "1"
 
 [[bin]]
 name = "icon_name"
@@ -21,6 +23,27 @@ bench = false
 [[bin]]
 name = "java_runtime_metadata"
 path = "fuzz_targets/java_runtime_metadata.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "download_manager_state"
+path = "fuzz_targets/download_manager_state.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "download_partial_metadata"
+path = "fuzz_targets/download_partial_metadata.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "download_resume_decision"
+path = "fuzz_targets/download_resume_decision.rs"
 test = false
 doc = false
 bench = false

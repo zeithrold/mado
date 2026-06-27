@@ -41,6 +41,9 @@ pub use verify::{
     ArtifactRedownloadReason, ArtifactVerification, ArtifactVerifier, ExistingArtifactDecision,
 };
 
+#[cfg(fuzzing)]
+pub use native_http::fuzzing;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -74,6 +77,20 @@ mod tests {
             config.validate(),
             Err(DownloadConfigError::PerHostExceedsGlobal)
         );
+    }
+
+    #[test]
+    fn config_allows_per_host_limit_to_equal_global_limit() {
+        let config = DownloadManagerConfig {
+            concurrency: DownloadConcurrencyConfig {
+                global_limit: 4,
+                per_host_limit: 4,
+                queue_capacity: 8,
+            },
+            ..DownloadManagerConfig::default()
+        };
+
+        assert_eq!(config.validate(), Ok(()));
     }
 
     #[test]
@@ -112,6 +129,89 @@ mod tests {
             manager.state(&job_id("a-1")?),
             Some(&DownloadJobState::Pending)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn pause_all_running_jobs_requests_each_worker_stop() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut manager = manager_with_jobs(2)?;
+        let first = job_id("job-0")?;
+        let second = job_id("job-1")?;
+        let _actions = manager.schedule_ready_jobs();
+
+        let actions = manager.apply_command(DownloadCommand::PauseAll)?;
+
+        assert_eq!(
+            actions,
+            vec![
+                DownloadManagerAction::StopWorker {
+                    id: first.clone(),
+                    reason: WorkerStopReason::Paused,
+                },
+                DownloadManagerAction::StopWorker {
+                    id: second.clone(),
+                    reason: WorkerStopReason::Paused,
+                },
+            ]
+        );
+        assert!(matches!(
+            manager.state(&first),
+            Some(DownloadJobState::Pausing { .. })
+        ));
+        assert!(matches!(
+            manager.state(&second),
+            Some(DownloadJobState::Pausing { .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn resume_all_paused_jobs_returns_them_to_pending() -> Result<(), Box<dyn std::error::Error>> {
+        let mut manager = manager_with_jobs(2)?;
+        let first = job_id("job-0")?;
+        let second = job_id("job-1")?;
+        manager.apply_command(DownloadCommand::PauseAll)?;
+        let _events = manager.drain_events();
+
+        let actions = manager.apply_command(DownloadCommand::ResumeAll)?;
+
+        assert!(actions.is_empty());
+        assert_eq!(manager.state(&first), Some(&DownloadJobState::Pending));
+        assert_eq!(manager.state(&second), Some(&DownloadJobState::Pending));
+        let events = manager.drain_events();
+        assert!(events.contains(&DownloadEvent::JobResumed { id: first }));
+        assert!(events.contains(&DownloadEvent::JobResumed { id: second }));
+        Ok(())
+    }
+
+    #[test]
+    fn cancel_all_handles_running_paused_and_pending_jobs() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut manager = manager_with_jobs(3)?;
+        manager.config.concurrency.global_limit = 1;
+        let running = job_id("job-0")?;
+        let paused = job_id("job-1")?;
+        let pending = job_id("job-2")?;
+        let _actions = manager.schedule_ready_jobs();
+        manager.apply_command(DownloadCommand::PauseJob(paused.clone()))?;
+
+        let actions = manager.apply_command(DownloadCommand::CancelAll)?;
+
+        assert_eq!(
+            actions,
+            vec![DownloadManagerAction::StopWorker {
+                id: running.clone(),
+                reason: WorkerStopReason::Cancelled,
+            }]
+        );
+        assert!(matches!(
+            manager.state(&running),
+            Some(DownloadJobState::Cancelling { .. })
+        ));
+        assert_eq!(manager.state(&paused), Some(&DownloadJobState::Cancelled));
+        assert_eq!(manager.state(&pending), Some(&DownloadJobState::Cancelled));
+        assert_eq!(manager.terminal_state(), Some(PlanTerminalState::Failed));
         Ok(())
     }
 
@@ -155,6 +255,26 @@ mod tests {
         assert!(actions.is_empty());
         assert_eq!(manager.state(&id), Some(&DownloadJobState::Cancelled));
         assert!(manager.drain_events().contains(&DownloadEvent::PlanFailed));
+        Ok(())
+    }
+
+    #[test]
+    fn cancelled_job_ignores_late_progress_and_completion() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut manager = manager_with_jobs(1)?;
+        let id = job_id("job-0")?;
+        manager.apply_command(DownloadCommand::CancelJob(id.clone()))?;
+        let _events = manager.drain_events();
+
+        manager.apply_worker_report(WorkerReport::Progress {
+            id: id.clone(),
+            downloaded: 1,
+            total: Some(1),
+        })?;
+        manager.apply_worker_report(WorkerReport::Completed { id: id.clone() })?;
+
+        assert_eq!(manager.state(&id), Some(&DownloadJobState::Cancelled));
+        assert!(manager.drain_events().is_empty());
         Ok(())
     }
 
@@ -213,6 +333,12 @@ mod tests {
         manager.apply_command(DownloadCommand::PauseJob(id.clone()))?;
         manager.apply_command(DownloadCommand::CancelJob(id.clone()))?;
         manager.apply_command(DownloadCommand::RetryJob(id.clone()))?;
+        manager.apply_worker_report(WorkerReport::Progress {
+            id: id.clone(),
+            downloaded: 1,
+            total: Some(1),
+        })?;
+        manager.apply_worker_report(WorkerReport::Completed { id: id.clone() })?;
         manager.apply_worker_report(WorkerReport::Failed {
             id: id.clone(),
             error: "late failure".to_string(),

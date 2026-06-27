@@ -52,7 +52,8 @@ Use the existing `justfile` recipes:
 - `just fmt` for formatting.
 - `just clippy` for strict linting.
 - `just test-unit` for local unit tests.
-- `just test-integration` for CI-only integration tests that may use real-world Minecraft metadata or JDK fixtures.
+- `just test-integration` for integration tests that are stable enough for the default CI gate and do not require live network services or large downloadable fixtures.
+- `just test-real-integration` for ignored real-world integration tests that require live network services, provider metadata, or large downloadable fixtures. Set `MADO_RUN_REAL_INTEGRATION=1` when running this recipe.
 - `just coverage` for local unit-test line coverage.
 - `just mutants-gate` for mutation score enforcement after `cargo-mutants` output exists.
 - `just check` for the local development gate, including unit-test coverage.
@@ -62,12 +63,14 @@ Use the existing `justfile` recipes:
 The three check tiers serve different feedback loops:
 
 - `just check` serves local development. It is the default gate before handing off code changes because it catches formatting, lint, unit behavior, and unit-test coverage regressions without depending on external fixtures.
-- `just check-ci` serves push and pull request confidence. It includes the local gate, then adds integration tests, dependency hygiene checks, and fuzz smoke so cross-crate behavior, real-world metadata assumptions, supply-chain issues, and fuzz harness health are verified by CI.
+- `just check-ci` serves push and pull request confidence. It includes the local gate, then adds stable integration tests, dependency hygiene checks, and fuzz smoke so cross-crate behavior, supply-chain issues, and fuzz harness health are verified by CI.
 - `just check-full` serves scheduled deep validation. It includes the CI gate, then adds mutation enforcement, nightly-only unused-dependency checks, and fuzz so slower or toolchain-sensitive checks do not block ordinary iteration.
+
+Real-world integration tests are outside the default local and PR gates. Run `just test-real-integration` explicitly when validating live providers such as Mojang/Piston metadata, Minecraft asset CDN downloads, or representative JDK fixture downloads.
 
 Docs-only changes do not require Rust tests. Code changes should at least run the smallest relevant local test command. Shared/core behavior should run `just check` locally, rely on `just check-ci` for integration coverage in CI, and reserve `just check-full` for the scheduled daily gate.
 
-When adding integration tests that depend on network APIs or downloadable fixtures, first validate the provider URLs and parameters with lightweight `curl` metadata requests. Do this before encoding the test fixture logic, because CI-only or gated network tests are often hard to run locally and otherwise make it unclear whether failures come from the code under test or from incorrect provider API assumptions.
+When adding real-world integration tests that depend on network APIs or downloadable fixtures, first validate the provider URLs and parameters with lightweight `curl` metadata requests. Do this before encoding the test fixture logic, because explicitly gated network tests are often hard to run locally and otherwise make it unclear whether failures come from the code under test or from incorrect provider API assumptions.
 
 ### Mocking
 

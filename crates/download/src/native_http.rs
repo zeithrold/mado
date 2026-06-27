@@ -94,7 +94,7 @@ impl DownloadBackend for NativeHttpBackend {
         reason: WorkerStopReason,
     ) -> Result<(), DownloadBackendError> {
         self.reap_finished_workers();
-        let Some(mut control) = self.active_workers.remove(id) else {
+        let Some(control) = self.active_workers.get_mut(id) else {
             return Ok(());
         };
         let Some(stop_sender) = control.stop_sender.take() else {
@@ -336,40 +336,7 @@ impl NativeHttpWorker {
     }
 
     fn resume_decision(&self, paths: &DownloadStoragePaths) -> ResumeDecision {
-        if self.config.resume.mode == DownloadResumeMode::Disabled {
-            return ResumeDecision::restart();
-        }
-        let Ok(metadata) = paths.read_partial_metadata() else {
-            return ResumeDecision::restart();
-        };
-        if !metadata_matches_job(&metadata, &self.job) {
-            return ResumeDecision::restart();
-        }
-        let Ok(partial_metadata) = fs::metadata(&paths.partial_path) else {
-            return ResumeDecision::restart();
-        };
-        if partial_metadata.len() != metadata.downloaded {
-            return ResumeDecision::restart();
-        }
-        if metadata.downloaded < self.config.resume.min_size {
-            return ResumeDecision::restart();
-        }
-        let if_range = metadata.validator.as_ref().and_then(|validator| {
-            validator
-                .etag
-                .clone()
-                .or_else(|| validator.last_modified.clone())
-        });
-        if if_range.is_none()
-            && self.config.resume.validator_policy == ResumeValidatorPolicy::RequireMatch
-        {
-            return ResumeDecision::restart();
-        }
-        ResumeDecision {
-            should_resume: true,
-            downloaded: metadata.downloaded,
-            if_range,
-        }
+        resume_decision_for_job(&self.job, &self.config.resume, paths)
     }
 
     fn apply_partial_retention(&self, reason: WorkerStopReason) {
@@ -410,6 +377,88 @@ impl ResumeDecision {
             should_resume: false,
             downloaded: 0,
             if_range: None,
+        }
+    }
+}
+
+fn resume_decision_for_job(
+    job: &DownloadJobSpec,
+    resume_config: &DownloadResumeConfig,
+    paths: &DownloadStoragePaths,
+) -> ResumeDecision {
+    if resume_config.mode == DownloadResumeMode::Disabled {
+        return ResumeDecision::restart();
+    }
+    let Ok(metadata) = paths.read_partial_metadata() else {
+        return ResumeDecision::restart();
+    };
+    if !metadata_matches_job(&metadata, job) {
+        return ResumeDecision::restart();
+    }
+    let Ok(partial_metadata) = fs::metadata(&paths.partial_path) else {
+        return ResumeDecision::restart();
+    };
+    if partial_metadata.len() != metadata.downloaded {
+        return ResumeDecision::restart();
+    }
+    if metadata.downloaded < resume_config.min_size {
+        return ResumeDecision::restart();
+    }
+    let if_range = metadata.validator.as_ref().and_then(|validator| {
+        validator
+            .etag
+            .clone()
+            .or_else(|| validator.last_modified.clone())
+    });
+    if if_range.is_none() && resume_config.validator_policy == ResumeValidatorPolicy::RequireMatch {
+        return ResumeDecision::restart();
+    }
+    ResumeDecision {
+        should_resume: true,
+        downloaded: metadata.downloaded,
+        if_range,
+    }
+}
+
+#[cfg(fuzzing)]
+pub mod fuzzing {
+    use std::path::Path;
+
+    use super::*;
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct FuzzResumeDecision {
+        pub should_resume: bool,
+        pub downloaded: u64,
+        pub if_range: Option<String>,
+    }
+
+    pub fn resume_decision_for_inputs(
+        job: &DownloadJobSpec,
+        config: &NativeHttpBackendConfig,
+        root: &Path,
+        partial_bytes: &[u8],
+        metadata_bytes: &[u8],
+    ) -> FuzzResumeDecision {
+        let paths = DownloadStoragePaths::for_job(job, &config.storage);
+        let paths = DownloadStoragePaths {
+            target_path: root.join(&paths.target_path),
+            partial_path: root.join(&paths.partial_path),
+            partial_metadata_path: root.join(&paths.partial_metadata_path),
+        };
+        paths
+            .ensure_parent_dirs()
+            .expect("fuzz resume directories should be creatable");
+        fs::write(&paths.partial_path, partial_bytes)
+            .expect("fuzz partial artifact should be writable");
+        fs::write(&paths.partial_metadata_path, metadata_bytes)
+            .expect("fuzz partial metadata should be writable");
+
+        let decision = super::resume_decision_for_job(job, &config.resume, &paths);
+        FuzzResumeDecision {
+            should_resume: decision.should_resume,
+            downloaded: decision.downloaded,
+            if_range: decision.if_range,
         }
     }
 }

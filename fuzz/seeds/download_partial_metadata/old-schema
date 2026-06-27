@@ -1,0 +1,13 @@
+{
+  "schema_version": 0,
+  "job_id": "asset",
+  "url": "https://example.test/assets/object",
+  "target_path": "assets/object",
+  "expected_size": 12,
+  "checksum": null,
+  "downloaded": 7,
+  "validator": {
+    "etag": "\"old\"",
+    "last_modified": null
+  }
+}
